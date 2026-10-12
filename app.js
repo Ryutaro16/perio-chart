@@ -285,7 +285,7 @@ function chartHTML(exam, o = {}) {
   });
   const pcrRow = (row) => toothRow(row, 'pcr', 'プラーク', (t, th) => (th.missing ? ['', ''] : [pcrSVG(t, th, o.print ? null : exam), '']));
 
-  return `<table class="chart"><colgroup><col class="labc">${'<col>'.repeat(48)}</colgroup>
+  return `<table class="chart${o.mini ? ' compact' : ''}"><colgroup><col class="labc">${'<col>'.repeat(48)}</colgroup>
     ${pcrRow(UPPER)}${mobRow(UPPER)}${furRow(UPPER, 'b')}${ppdRow(UPPER, 'b', '頬側')}${numRow(UPPER, '上顎')}${ppdRow(UPPER, 'l', '口蓋側')}${furRow(UPPER, 'l')}
     <tr class="gap"><td colspan="49"></td></tr>
     ${furRow(LOWER, 'l')}${ppdRow(LOWER, 'l', '舌側')}${numRow(LOWER, '下顎')}${ppdRow(LOWER, 'b', '頬側')}${furRow(LOWER, 'b')}${mobRow(LOWER)}${pcrRow(LOWER)}
@@ -403,6 +403,28 @@ function patientDialog(p, onSaved) {
 }
 
 /* ================= 患者ごとの検査一覧（時系列） ================= */
+let patientTab = 'chart'; // 経過の表示：'chart'（過去のチャートを新しい順に）／'graph'（推移のグラフ）
+// 経過のチャート1回分：検査日・チャート（前回との差の印つき）・数値のまとめ
+function historyCardHTML(e, prev) {
+  const s = calcStats(e);
+  // ポケットの深さの内訳（測った部位に対する割合）
+  const ge6pct = s.sites ? (s.ge6 / s.sites) * 100 : null;
+  const le3 = s.sites ? 100 - s.ge4pct : null;
+  const mid = s.sites ? s.ge4pct - ge6pct : null;
+  const dc = diffCounts(e, prev);
+  return `<section class="hcard">
+    <div class="hhead"><b>${fmtDate(e.date)}</b>${e.examiner ? `<span class="sub">検査者：${esc(e.examiner)}</span>` : ''}
+      ${prev ? `<span class="sub">前回 ${fmtDate(prev.date)} との差：<i class="dif dn">−</i>改善 ${dc.better}部位　<i class="dif up">+</i>悪化 ${dc.worse}部位</span>` : '<span class="sub">初回の検査</span>'}
+      <div class="grow"></div><button class="btn" data-open="${e.id}">開く</button><button class="btn" data-print="${e.id}">印刷</button></div>
+    <div class="hchart">${chartHTML(e, { prev, mini: true })}</div>
+    <div class="hstats">
+      <span>PCR <b>${fmtPct(s.pcr)}</b></span><span>BOP <b>${fmtPct(s.boppct)}</b></span>
+      <span>PPD 〜3mm <b>${fmtPct(le3)}</b>・4〜5mm <b>${fmtPct(mid)}</b>・6mm以上 <b>${fmtPct(ge6pct)}</b></span>
+      <span>平均PPD <b>${s.mean == null ? '—' : s.mean.toFixed(1)}</b>${s.mean == null ? '' : 'mm'}</span>
+      <span>現在歯数 <b>${s.present}</b>本</span><span>分岐部病変 <b>${s.furT}</b>歯</span>
+    </div>
+  </section>`;
+}
 async function showPatient(pid, showDeleted = false) {
   const p = await DB.get('patients', pid);
   if (!p) return showList();
@@ -425,18 +447,22 @@ async function showPatient(pid, showDeleted = false) {
         <dl><div><dt>カルテ番号</dt><dd>${esc(p.chartNo || '—')}</dd></div>
         <div><dt>生年月日</dt><dd>${p.birth ? `${fmtDate(p.birth)}（${ageAt(p.birth)}歳）` : '—'}</dd></div>
         ${p.note ? `<div><dt>メモ</dt><dd>${esc(p.note)}</dd></div>` : ''}</dl></div>
-      ${!showDeleted && live.length ? `<div class="row-tools"><h2>経過</h2><div class="grow"></div><button class="btn" id="prtTrend">経過を印刷（患者さん用）</button></div>
-        <div class="tgrid-cards">${trendCardsHTML([...live].reverse())}</div>
-        ${live.length < 2 ? '<p class="sub">2回目の検査から、推移と前回からの変化が出ます。</p>' : ''}` : ''}
       <div class="row-tools"><h2>${showDeleted ? '削除した検査' : '検査の記録（新しい順）'}</h2><div class="grow"></div>
         ${showDeleted ? '<button class="btn" id="tglDel">‹ 検査の記録に戻る</button>' : '<button class="btn primary big" id="newx">＋ 新しい検査を始める</button>'}</div>
       <div class="card tablewrap">${rows
         ? `<table class="xt"><thead><tr><th>検査日</th><th>現在歯数</th><th>平均PPD</th><th>4mm以上</th><th>6mm以上</th><th>BOP</th><th>PCR</th><th>分岐部</th><th>検査者</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
         : `<p class="empty">${showDeleted ? '削除した検査はありません。' : 'まだ検査がありません。「＋ 新しい検査を始める」から入力してください。'}</p>`}</div>
       ${!showDeleted && dead.length ? `<p><button class="btn ghost" id="tglDel">削除した検査（${dead.length}件）を表示</button></p>` : ''}
+      ${!showDeleted && live.length ? `<div class="row-tools trendhead"><h2>経過</h2>
+          <div class="segtabs"><button class="seg${patientTab === 'chart' ? ' on' : ''}" data-ptab="chart">チャート</button><button class="seg${patientTab === 'graph' ? ' on' : ''}" data-ptab="graph">グラフ</button></div>
+          <div class="grow"></div><button class="btn" id="prtTrend">経過を印刷（患者さん用）</button></div>
+        ${patientTab === 'chart'
+          ? `<div class="hist">${live.map((e, i) => historyCardHTML(e, live[i + 1] || null)).join('')}</div>`
+          : `<div class="tgrid-cards">${trendCardsHTML([...live].reverse())}</div>${live.length < 2 ? '<p class="sub">2回目の検査から、推移と前回からの変化が出ます。</p>' : ''}`}` : ''}
     </main>`;
   $('#editp').onclick = () => patientDialog(p, () => showPatient(pid));
   if ($('#prtTrend')) $('#prtTrend').onclick = () => printTrend(p, [...live].reverse());
+  document.querySelectorAll('[data-ptab]').forEach((b) => (b.onclick = () => { patientTab = b.dataset.ptab; showPatient(pid); }));
   if ($('#newx')) $('#newx').onclick = () => newExamDialog(p, live[0]);
   if ($('#tglDel')) $('#tglDel').onclick = () => showPatient(pid, !showDeleted);
   $('main').onclick = async (e) => {
