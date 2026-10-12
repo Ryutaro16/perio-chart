@@ -251,9 +251,10 @@ function chartHTML(exam, o = {}) {
 /* ================= 画面共通 ================= */
 const app = () => $('#app');
 let view = { name: 'list' };
-function openDialog(html) {
+function openDialog(html, wide = false) {
   const d = $('#dlg');
   d.onclose = null;
+  d.classList.toggle('wide', wide);
   d.innerHTML = html;
   d.querySelectorAll('[data-close]').forEach((b) => (b.onclick = closeDialog));
   if (!d.open) d.showModal();
@@ -814,21 +815,41 @@ function voiceInterim(text) {
 }
 function voiceFinal(text) {
   clearTimeout(voice.timer);
-  if (voice.prov && sameSpeech(voice.prov.text, text)) { voice.prov = null; addVoiceLog(text); return; } // 仮入力のまま確定
+  const startIdx = voice.prov ? voice.prov.cur : ed.cur; // 話し始めたときのカーソル
+  if (voice.prov && sameSpeech(voice.prov.text, text)) { voice.prov = null; addVoiceLog(text, startIdx); return; } // 仮入力のまま確定
   undoProv(); // 仮入力と違う文で確定したら、仮入力を戻してから入れ直す
   handleSpeech(text);
-  addVoiceLog(text);
+  addVoiceLog(text, startIdx);
 }
-function addVoiceLog(text) {
-  voice.log.unshift({ time: new Date().toLocaleTimeString('ja-JP'), raw: text, result: voice.lastResult || '' });
-  voice.log.length = Math.min(voice.log.length, 50);
+const VOICE_LOG_MAX = 100;
+function addVoiceLog(text, startIdx) {
+  const s = ed.seq[startIdx];
+  voice.log.unshift({ id: uid(), time: new Date().toLocaleString('ja-JP'), start: s ? siteName(s.t, s.k) : '', raw: text, result: voice.lastResult || '', ok: null, correct: '' });
+  voice.log.length = Math.min(voice.log.length, VOICE_LOG_MAX);
+  saveVoiceLog();
 }
+const saveVoiceLog = () => DB.put('settings', { key: 'voicelog', items: voice.log }).catch(() => {});
 function showVoiceLog() {
-  const rows = voice.log.map((l) => `<tr><td>${esc(l.time)}</td><td>「${esc(l.raw)}」</td><td>${esc(l.result)}</td></tr>`).join('');
+  const okBtns = (l) => `<button class="okb${l.ok === true ? ' on' : ''}" data-ok="${l.id}" data-v="1">○</button><button class="okb ng${l.ok === false ? ' on' : ''}" data-ok="${l.id}" data-v="0">×</button>`;
+  const rows = voice.log.map((l) => `<tr><td class="nw">${esc(l.time)}</td><td>${esc(l.start || '')}</td><td>「${esc(l.raw)}」</td><td>${esc(l.result)}</td>
+    <td class="nw">${okBtns(l)}</td><td>${l.ok === false ? `<input class="fix" data-fix="${l.id}" value="${esc(l.correct)}" placeholder="例：右上6 頬側 近心 4">` : ''}</td></tr>`).join('');
   openDialog(`<div class="dlg-body"><h2>聞き取りの記録（新しい順）</h2>
-    <p class="hint">聞き間違いがあれば、この画面を見せてください。読み替えのルールを足します。</p>
-    <div class="vlog">${rows ? `<table><thead><tr><th>時刻</th><th>聞き取った言葉</th><th>入力した内容</th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="empty">まだ記録がありません</p>'}</div>
-    <div class="dlg-actions"><button class="btn primary" data-close>閉じる</button></div></div>`);
+    <p class="hint">間違っていた行は「×」を押して、「正しくは」に本当に言った内容を書いてください。「記録を書き出す」で私に送れます。</p>
+    <div class="vlog">${rows ? `<table><thead><tr><th>時刻</th><th>開始位置</th><th>聞き取った言葉</th><th>入力した内容</th><th>判定</th><th>正しくは</th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="empty">まだ記録がありません</p>'}</div>
+    <div class="dlg-actions"><button class="btn" id="vlogTest">読み上げテスト</button><div class="grow"></div><button class="btn" id="vlogExport">記録を書き出す</button><button class="btn primary" data-close>閉じる</button></div></div>`, true);
+  const d = $('#dlg');
+  d.querySelectorAll('[data-ok]').forEach((b) => (b.onclick = () => {
+    const l = voice.log.find((x) => x.id === b.dataset.ok);
+    const v = b.dataset.v === '1';
+    l.ok = l.ok === v ? null : v;
+    saveVoiceLog();
+    showVoiceLog();
+  }));
+  d.querySelectorAll('[data-fix]').forEach((inp) => (inp.onchange = () => { voice.log.find((x) => x.id === inp.dataset.fix).correct = inp.value.trim(); saveVoiceLog(); }));
+  $('#vlogExport').onclick = () => exportCSV(`voice-log-${stamp()}.csv`, '聞き取りの記録',
+    ['時刻', '開始位置', '聞き取った言葉', '入力した内容', '判定', '正しくは'],
+    voice.log.map((l) => [l.time, l.start, l.raw, l.result, l.ok === true ? '○' : l.ok === false ? '×' : '', l.correct]));
+  $('#vlogTest').onclick = () => { closeDialog(); showVoiceTest(); };
 }
 
 function voiceToggle() { if (voice.on) voiceStop(); else voiceStart(); }
@@ -879,8 +900,9 @@ function renderVoice() {
   if (!v) return;
   v.hidden = !voice.on && !voice.msg;
   v.innerHTML = `${voice.on ? '<span class="vdot"></span>' : ''}<span class="vm">${voice.msg}</span>${voice.interim ? `<span class="vi">${esc(voice.interim)}…</span>` : ''}
-    <button class="tool undo vlogbtn" id="vlog">聞き取りの記録</button>`;
+    <button class="tool undo vlogbtn" id="vlog">聞き取りの記録</button><button class="tool undo" id="vtest">読み上げテスト</button>`;
   $('#vlog').onclick = showVoiceLog;
+  $('#vtest').onclick = showVoiceTest;
 }
 
 // 聞き取った文字を、入力の指示（トークン）に分ける
@@ -964,11 +986,12 @@ function undoVoiceOps(ops) {
 }
 
 // provisional = 確定前の仮入力。取り消し・移動などの指示を含むときは仮入力しない
-function handleSpeech(raw, provisional = false) {
-  if (view.name !== 'editor' || !ed.exam) return null;
+// dry = 読み上げテスト用の試し実行（画面・保存・取り消し履歴には触らない）
+function handleSpeech(raw, provisional = false, dry = false) {
+  if (!dry && (view.name !== 'editor' || !ed.exam)) return null;
   const toks = tokenizeSpeech(raw);
   if (provisional && (!toks.length || toks.some((t) => ['undo', 'prev', 'next', 'stop'].includes(t.type)))) return null;
-  if (ed.mode !== 'ppd') ed.mode = 'ppd';
+  if (!dry && ed.mode !== 'ppd') ed.mode = 'ppd';
   const T = ed.exam.teeth;
   const ops = [], done = [];
   let target = null;
@@ -1028,10 +1051,11 @@ function handleSpeech(raw, provisional = false) {
     } else if (tk.type === 'undo') undoLast();
     else if (tk.type === 'prev') { moveToTarget(); ed.cur = stepPPD(-1); voice.endedSite = null; moved = true; }
     else if (tk.type === 'next') { moveToTarget(); ed.cur = stepPPD(1); moved = true; }
-    else if (tk.type === 'stop') { voiceStop(); }
+    else if (tk.type === 'stop') { if (!dry) voiceStop(); }
   }
   moveToTarget();
   if (moved && !ops.length) done.push(`${siteName(cur().t, cur().k)} へ移動しました`);
+  if (dry) return { ops, done };
 
   if (ops.length) {
     voice.hist.push(ops);
@@ -1044,6 +1068,156 @@ function handleSpeech(raw, provisional = false) {
   touch();
   renderVoice();
   return ops;
+}
+
+/* ================= 音声入力の読み上げテスト ================= */
+// お題（正解）を出して読み上げてもらい、聞き取り結果と○×を記録する。患者の検査には書き込まない
+const vt = { on: false, rec: null, item: null, log: [], onlyNG: false, interim: '', last: null, buf: '', timer: null, from: null };
+const VT_MAX = 500;
+const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+function makeTestItem() {
+  const seq = buildSeq(settings.order);
+  if (Math.random() < 0.7) {
+    const t = pick(ALL);
+    const [side, sname] = pick([['b', '頬側'], ['l', sideName(t, 'l')]]);
+    const [pos, pname] = pick([['m', '近心'], ['d', '遠心'], ['c', '中央']]);
+    const n = 1 + Math.floor(Math.random() * 9);
+    const plus = Math.random() < 0.3;
+    const startIdx = Math.floor(Math.random() * seq.length); // カーソルが別の場所にあっても正しく入るか
+    return { kind: '部位指定', phrase: `${toothName(t)} ${sname} ${pname} ${n}${plus ? ' プラス' : ''}`, startIdx, startLabel: '', expect: [{ t, k: side + pos, n, plus }] };
+  }
+  const i = Math.floor(Math.random() * (seq.length - 3));
+  const nums = [0, 0, 0].map(() => 1 + Math.floor(Math.random() * 9));
+  const plusAt = Math.random() < 0.3 ? Math.floor(Math.random() * 3) : -1;
+  return {
+    kind: '連続', phrase: nums.map((n, j) => `${n}${j === plusAt ? ' プラス' : ''}`).join('、'),
+    startIdx: i, startLabel: siteName(seq[i].t, seq[i].k),
+    expect: nums.map((n, j) => ({ t: seq[i + j].t, k: seq[i + j].k, n, plus: j === plusAt })),
+  };
+}
+// 入力画面と同じ読み取り方で、空の練習チャートに試し入力する
+function dryRunSpeech(raw, startIdx) {
+  const exam = newExam(null, today(), '', null);
+  const save = { exam: ed.exam, seq: ed.seq, cur: ed.cur, lastSite: voice.lastSite, endedSite: voice.endedSite, hist: voice.hist };
+  ed.exam = exam; ed.seq = buildSeq(settings.order); ed.cur = startIdx;
+  voice.lastSite = null; voice.endedSite = null; voice.hist = [];
+  try { return { ...handleSpeech(raw, false, true), exam }; } finally {
+    ed.exam = save.exam; ed.seq = save.seq; ed.cur = save.cur;
+    voice.lastSite = save.lastSite; voice.endedSite = save.endedSite; voice.hist = save.hist;
+  }
+}
+function judgeTest(item, r) {
+  const T = r.exam.teeth;
+  const hit = item.expect.every((e) => T[e.t].ppd[e.k] === e.n && !!T[e.t].bop[e.k] === e.plus);
+  const extra = r.ops.some((o) => !item.expect.some((e) => e.t === o.t && e.k === o.k) && (o.field === 'ppd' || T[o.t][o.field][o.k]));
+  return hit && !extra;
+}
+
+async function showVoiceTest() {
+  vt.from = view.name === 'editor' ? { ...view } : null;
+  voiceStop(true);
+  view = { name: 'voicetest' };
+  const saved = await DB.get('settings', 'voicetest');
+  vt.log = (saved && saved.items) || [];
+  vt.item = makeTestItem();
+  vt.last = null;
+  app().innerHTML = `
+    <header class="bar"><button class="btn ghost" id="vtBack">‹ 戻る</button><h1>音声入力の読み上げテスト</h1><div class="grow"></div>
+      <button class="btn" id="vtExport">記録を書き出す</button></header>
+    <main class="wrap stack">
+      <section class="card vtcard">
+        <div class="vtlab">次の言葉を、ひと息で読んでください</div>
+        <div class="vtstart" id="vtStart"></div>
+        <div class="vtphrase" id="vtPhrase"></div>
+        <div class="vtbtns"><button class="btn primary big" id="vtMic"></button><button class="btn big" id="vtSkip">別のお題にする</button></div>
+        <div class="vtstatus" id="vtStatus"></div>
+        <p class="hint">練習用の空のチャートで試すので、患者の検査には書き込みません。</p>
+      </section>
+      <section class="card">
+        <div class="row-tools"><h2>記録</h2><span id="vtScore" class="vtscore"></span><div class="grow"></div>
+          <label class="mini"><input type="checkbox" id="vtNG" ${vt.onlyNG ? 'checked' : ''}> 間違いだけ表示</label>
+          <button class="btn" id="vtClear">記録を消す</button></div>
+        <div class="vlog" id="vtLog"></div>
+      </section>
+    </main>`;
+  $('#vtBack').onclick = () => { vtStop(); if (vt.from && vt.from.examId) openEditor(vt.from.examId); else showSettings(); };
+  $('#vtMic').onclick = () => (vt.on ? vtStop() : vtStart());
+  $('#vtSkip').onclick = () => { vt.item = makeTestItem(); vt.buf = ''; vtRender(); };
+  $('#vtNG').onchange = (e) => { vt.onlyNG = e.target.checked; vtRender(); };
+  $('#vtClear').onclick = async () => {
+    if (!(await askConfirm('読み上げテストの記録をすべて消しますか？', '消す', true))) return;
+    vt.log = []; vt.last = null; await DB.put('settings', { key: 'voicetest', items: [] }); vtRender();
+  };
+  $('#vtExport').onclick = () => exportCSV(`voice-test-${stamp()}.csv`, '読み上げテストの記録',
+    ['時刻', '判定', '種類', 'お題（正解）', '開始位置', '聞き取った言葉', '入力した内容'],
+    vt.log.map((l) => [l.time, l.ok ? '○' : '×', l.kind, l.phrase, l.start, l.heard, l.result]));
+  vtRender();
+}
+function vtStart() {
+  if (!SR) { vt.last = { msg: 'この画面では音声認識が使えません。iPadは Safari のタブで開いてください' }; vtRender(); return; }
+  const r = new SR();
+  r.lang = 'ja-JP'; r.continuous = true; r.interimResults = true;
+  r.onresult = (e) => {
+    let interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const res = e.results[i];
+      if (res.isFinal) vt.buf += res[0].transcript; else interim += res[0].transcript;
+    }
+    vt.interim = interim;
+    // 文が途中で区切られても1つにまとめるため、確定後しばらく続きがなければ判定する
+    clearTimeout(vt.timer);
+    if (vt.buf.trim() && !interim.trim()) vt.timer = setTimeout(vtJudge, 900);
+    vtRender();
+  };
+  r.onerror = (e) => {
+    if (e.error === 'no-speech' || e.error === 'aborted') return;
+    vt.on = false; vt.last = { msg: 'マイクが使えません（' + esc(e.error) + '）。マイクの使用を許可してください' }; vtRender();
+  };
+  r.onend = () => { if (vt.on && vt.rec === r) setTimeout(() => { if (vt.on && vt.rec === r) try { r.start(); } catch { /* 再開済み */ } }, 250); };
+  vt.rec = r; vt.on = true; vt.buf = '';
+  try { r.start(); } catch (err) { vt.on = false; vt.last = { msg: '開始できませんでした：' + esc(err.message) }; }
+  vtRender();
+}
+function vtStop() {
+  vt.on = false; clearTimeout(vt.timer);
+  const r = vt.rec; vt.rec = null; vt.interim = '';
+  if (r) try { r.stop(); } catch { /* 停止済み */ }
+  if (view.name === 'voicetest') vtRender();
+}
+function vtJudge() {
+  const heard = vt.buf.trim();
+  vt.buf = '';
+  if (!heard || !vt.item) return;
+  const item = vt.item;
+  const r = dryRunSpeech(heard, item.startIdx);
+  const entry = {
+    time: new Date().toLocaleString('ja-JP'), ok: judgeTest(item, r), kind: item.kind, phrase: item.phrase,
+    start: item.startLabel, heard, result: r.done.length ? r.done.join('、') : '入力できる言葉がありませんでした',
+  };
+  vt.log.unshift(entry);
+  vt.log.length = Math.min(vt.log.length, VT_MAX);
+  DB.put('settings', { key: 'voicetest', items: vt.log }).catch(() => {});
+  vt.last = entry;
+  vt.item = makeTestItem();
+  vtRender();
+}
+function vtRender() {
+  if (view.name !== 'voicetest' || !$('#vtPhrase')) return;
+  $('#vtStart').textContent = vt.item.startLabel ? `カーソルが「${vt.item.startLabel}」にある状態で：` : '';
+  $('#vtPhrase').textContent = vt.item.phrase;
+  const mic = $('#vtMic');
+  mic.textContent = vt.on ? '● 聞き取り中（押すと停止）' : '🎤 読み上げを始める';
+  mic.classList.toggle('rec', vt.on);
+  const L = vt.last;
+  $('#vtStatus').innerHTML = (vt.interim || vt.buf ? `<div class="vi">聞き取り中：${esc(vt.buf + vt.interim)}…</div>` : '')
+    + (L && L.msg ? `<div class="ng">${L.msg}</div>` : '')
+    + (L && L.phrase ? `<div class="${L.ok ? 'ok' : 'ng'}">${L.ok ? '○ 正しく入りました' : '× 違う内容が入りました'}：お題「${esc(L.phrase)}」→ 聞き取り「${esc(L.heard)}」→ ${esc(L.result)}</div>` : '');
+  const n = vt.log.length, ok = vt.log.filter((l) => l.ok).length;
+  $('#vtScore').textContent = n ? `○ ${ok} / ${n}（${Math.round((ok / n) * 100)}%）` : '';
+  const rows = vt.log.filter((l) => !vt.onlyNG || !l.ok).map((l) => `<tr class="${l.ok ? '' : 'ngrow'}"><td class="nw">${l.ok ? '○' : '×'}</td><td>${esc(l.phrase)}</td><td>${esc(l.start)}</td><td>「${esc(l.heard)}」</td><td>${esc(l.result)}</td><td class="nw">${esc(l.time)}</td></tr>`).join('');
+  $('#vtLog').innerHTML = rows
+    ? `<table><thead><tr><th>判定</th><th>お題（正解）</th><th>開始位置</th><th>聞き取った言葉</th><th>入力した内容</th><th>時刻</th></tr></thead><tbody>${rows}</tbody></table>`
+    : '<p class="empty">まだ記録がありません</p>';
 }
 
 /* ================= 印刷 ================= */
@@ -1083,11 +1257,13 @@ async function showSettings() {
         <div class="row-tools"><button class="btn primary" data-act="backup">バックアップを書き出す</button>
           <label class="btn">バックアップから読み込む<input type="file" id="imp" class="vh" accept="application/json,.json"></label></div>
         <p class="sub">保存領域の保護：${persisted === null ? '不明' : persisted ? '有効（ブラウザが自動で消さない設定）' : '未設定（ホーム画面に追加して使うと安定します）'}</p></section>
+      <section class="card"><h2>音声入力の読み上げテスト</h2><p>お題を読み上げて、正しく聞き取れるかを確かめます。結果は記録され、書き出して送れます。</p><button class="btn" id="vtOpen">読み上げテストを開く</button></section>
       <section class="card"><h2>見本データ</h2><p>動作確認用に、架空の患者「見本 太郎」と3回分の検査を追加します。</p><button class="btn" id="demo">見本データを追加</button></section>
     </main>`;
   $('#clinic').onchange = (e) => { settings.clinicName = e.target.value.trim(); saveSettings(); };
   document.querySelectorAll('input[name=order]').forEach((r) => (r.onchange = () => { settings.order = r.value; saveSettings(); }));
   $('#imp').onchange = (e) => { const f = e.target.files[0]; if (f) importBackup(f); e.target.value = ''; };
+  $('#vtOpen').onclick = showVoiceTest;
   $('#demo').onclick = async () => {
     const { patient, exams } = makeDemo();
     await DB.put('patients', patient);
@@ -1096,23 +1272,37 @@ async function showSettings() {
   };
 }
 
+// iPadは共有シート（AirDropなど）、Macはダウンロードフォルダへ
+async function saveFile(file, title) {
+  if (navigator.maxTouchPoints > 0 && navigator.canShare && navigator.canShare({ files: [file] })) {
+    await navigator.share({ files: [file], title });
+  } else {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(file);
+    a.download = file.name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }
+}
+const stamp = () => { const d = new Date(); return `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}-${pad2(d.getHours())}${pad2(d.getMinutes())}`; };
+const csvCell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+async function exportCSV(name, title, header, rows) {
+  const text = '\ufeff' + [header, ...rows].map((r) => r.map(csvCell).join(',')).join('\r\n');
+  try { await saveFile(new File([text], name, { type: 'text/csv' }), title); } catch (err) {
+    if (err && err.name === 'AbortError') return;
+    await notify('書き出せませんでした：' + err);
+  }
+}
+
 async function exportBackup() {
   const data = { app: 'perio-chart', version: 1, exportedAt: new Date().toISOString(), patients: await DB.all('patients'), exams: await DB.all('exams'), settings };
   const d = new Date();
   const name = `perio-backup-${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}-${pad2(d.getHours())}${pad2(d.getMinutes())}.json`;
   const file = new File([JSON.stringify(data)], name, { type: 'application/json' });
   try {
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      await navigator.share({ files: [file], title: 'ペリオチャートのバックアップ' });
-    } else {
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(file);
-      a.download = name;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-    }
+    await saveFile(file, 'ペリオチャートのバックアップ');
   } catch (err) {
     if (err && err.name === 'AbortError') return; // 共有シートを閉じた
     await notify('バックアップを書き出せませんでした：' + err);
@@ -1226,6 +1416,7 @@ async function reopenView() {
     if (MODES.some(([m]) => m === v.mode)) { ed.mode = v.mode; refresh(); }
   } else if (v && v.name === 'patient') await showPatient(v.pid, v.showDeleted);
   else if (v && v.name === 'settings') await showSettings();
+  else if (v && v.name === 'voicetest') await showVoiceTest();
   else await showList();
 }
 
@@ -1244,6 +1435,8 @@ async function reopenView() {
     return;
   }
   await loadSettings();
+  const vlog = await DB.get('settings', 'voicelog');
+  if (vlog && vlog.items) voice.log = vlog.items;
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   await reopenView();
   checkUpdate();

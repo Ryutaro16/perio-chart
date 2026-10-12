@@ -102,6 +102,8 @@ h2 { font-size: 17px; margin: 0 0 10px; }
 
 /* ---------- ダイアログ ---------- */
 dialog { border: none; border-radius: 16px; padding: 0; width: min(640px, 92vw); box-shadow: 0 20px 60px rgba(15, 23, 42, .25); }
+dialog.wide { width: min(1000px, 96vw); }
+dialog .dlg-actions .grow { flex: 1; }
 dialog::backdrop { background: rgba(15, 23, 42, .35); }
 .dlg-body { padding: 18px 20px; }
 .dlg-body h2 { font-size: 19px; margin-bottom: 14px; }
@@ -132,6 +134,24 @@ dialog::backdrop { background: rgba(15, 23, 42, .35); }
 .vlog table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .vlog th { text-align: left; font-size: 12px; color: var(--sub); padding: 6px 8px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: #fff; }
 .vlog td { padding: 6px 8px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+.vlog td.nw { white-space: nowrap; }
+.vlog .okb { min-width: 40px; min-height: 36px; border: 1px solid var(--line); background: #fff; border-radius: 8px; font-size: 18px; font-weight: 700; margin-right: 4px; color: var(--accent); }
+.vlog .okb.ng { color: #b91c1c; }
+.vlog .okb.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.vlog .okb.ng.on { background: #b91c1c; border-color: #b91c1c; }
+.vlog input.fix { width: 100%; min-width: 180px; font-size: 16px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; }
+.vlog tr.ngrow td { background: #fff5f5; }
+.vtcard { text-align: center; padding: 22px 16px; }
+.vtlab { color: var(--sub); font-size: 15px; }
+.vtstart { color: var(--accent); font-weight: 700; margin-top: 6px; min-height: 1.4em; }
+.vtphrase { font-size: 40px; font-weight: 800; margin: 10px 0 16px; letter-spacing: 1px; }
+.vtbtns { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+.btn.rec { background: #dc2626; border-color: #dc2626; color: #fff; }
+.vtstatus { margin-top: 14px; font-size: 15px; min-height: 1.6em; }
+.vtstatus .ok { color: var(--accent); font-weight: 700; }
+.vtstatus .ng { color: #b91c1c; font-weight: 700; }
+.vtstatus .vi { color: var(--sub); }
+.vtscore { font-weight: 700; color: var(--accent); }
 .voicebar .vdot { width: 10px; height: 10px; border-radius: 50%; background: #dc2626; flex: none; animation: vblink 1.2s infinite; }
 @keyframes vblink { 50% { opacity: .25; } }
 .savest.busy { color: var(--sub); }
