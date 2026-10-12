@@ -126,10 +126,22 @@ dialog::backdrop { background: rgba(15, 23, 42, .35); }
 .mini input:not([type]) { width: 120px; }
 .savest { font-size: 13px; color: var(--accent); }
 .btn.mic.rec { background: #dc2626; border-color: #dc2626; color: #fff; font-weight: 700; }
-.voicebar { display: flex; align-items: center; gap: 10px; padding: 6px 14px; background: #eef5ff; border-top: 1px solid #cfe0f5; font-size: 14px; color: var(--ink); min-height: 34px; }
+.voicebar { padding: 6px 14px; background: #eef5ff; border-top: 1px solid #cfe0f5; font-size: 15px; color: var(--ink); min-height: 34px; }
+.voicebar .vrow { display: flex; align-items: center; gap: 10px; }
+.voicebar.warn { background: #fef3c7; border-top: 2px solid #f59e0b; }
+.voicebar .vwarn { font-size: 18px; line-height: 1.25; font-weight: 800; color: #92400e; flex: none; max-width: 55%; }
+.voicebar.warn .vm { font-size: 13px; color: var(--sub); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .voicebar[hidden] { display: none; }
 .voicebar .vi { color: var(--sub); }
-.voicebar .vctx { flex: none; background: #dc2626; color: #fff; font-weight: 700; padding: 2px 10px; border-radius: 8px; }
+.voicebar .vctx { flex: none; background: #dc2626; color: #fff; font-weight: 800; font-size: 20px; padding: 3px 14px; border-radius: 10px; }
+/* 出血タブの歯列の地図 */
+.areamap { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 2px 0 2px; }
+.pad-status .bopclear { margin-left: auto; }
+.ablock { display: flex; align-items: center; gap: 8px; }
+.ajaw { font-size: 13px; font-weight: 700; color: var(--sub); writing-mode: vertical-rl; letter-spacing: 2px; }
+.agrid { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 3px; }
+.area { min-height: 31px; border: 1px solid var(--line); background: #f8fafc; border-radius: 8px; font-size: 15px; color: var(--sub); }
+.area.on { background: #dc2626; border-color: #dc2626; color: #fff; font-size: 19px; font-weight: 800; box-shadow: 0 0 0 3px #fecaca; }
 .voicebar .vlogbtn { margin-left: auto; flex: none; }
 .vlog { max-height: 55vh; overflow: auto; border: 1px solid var(--line); border-radius: 10px; }
 .vlog table { width: 100%; border-collapse: collapse; font-size: 14px; }
@@ -227,8 +239,8 @@ dialog::backdrop { background: rgba(15, 23, 42, .35); }
 .chart td.p6 { background: var(--p6); color: var(--p6-ink); }
 .chart td.miss { background: repeating-linear-gradient(135deg, var(--miss) 0 4px, #f6f7f9 4px 8px); }
 .chart td.cur { box-shadow: inset 0 0 0 3px var(--cur); }
-.chart td.ctxrow { box-shadow: inset 0 -3px 0 #f87171; }
-.chart td.ctxrow.cur { box-shadow: inset 0 0 0 3px var(--cur); }
+/* 出血だけの音声で、今声で入れている列：薄い赤で塗り、上下に赤い太線 */
+.chart td.ctxrow { box-shadow: inset 0 0 0 999px rgba(239, 68, 68, .14), inset 0 4px 0 #dc2626, inset 0 -4px 0 #dc2626; }
 /* 前回から引き継いだ未確定の値 */
 .chart td.c { color: #a7b0bb; font-weight: 500; font-style: italic; }
 .chart td.s.c.p4 { background: #fdf5d6; color: #c4a46a; }

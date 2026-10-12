@@ -601,9 +601,12 @@ function padHTML() {
       </div>`;
   } else if (ed.mode === 'bop') {
     const n = ALL.reduce((a, t) => a + (T[t].missing ? 0 : SITES.filter((k) => T[t].bop[k]).length), 0);
-    body = `<div class="pad-status">${flashHTML()}<span>チャートのポケットの欄を<strong>タップすると出血</strong>が付きます。もう一度タップで外れます</span>
-        <span class="tip">いま出血 ${n}部位。声で入れるときは上の「🎤 出血」</span></div>
-      <div class="keys tools2"><button class="tool" data-act="bopclear">出血の記録をすべて消す</button><span></span></div>`;
+    const voiceBop = voice.on && voice.mode === 'bop' && voice.ctx;
+    body = `<div class="pad-status">${flashHTML()}${voiceBop
+      ? `<span>いま出血 <strong>${n}</strong>部位。下の地図を押すと、声で入れる列を切り替えられます</span>`
+      : `<span>チャートのポケットの欄を<strong>タップすると出血</strong>が付きます。もう一度タップで外れます</span><span class="tip">いま出血 ${n}部位。声で入れるときは上の「🎤 出血」</span>`}
+        <button class="tool undo bopclear" data-act="bopclear">出血の記録をすべて消す</button></div>
+      ${voice.on && voice.mode === 'bop' && voice.ctx ? areaMapHTML(voice.ctx) : ''}`;
   } else if (ed.mode === 'mob') {
     const t = MOB_SEQ[ed.mob];
     body = `<div class="pad-status">${flashHTML()}<span>入力中：<strong>${toothName(t)} の動揺度</strong></span></div>
@@ -648,6 +651,18 @@ function rangeBtn(v) {
 function tapFlag(type, t, k, holder) {
   if (isCarried(ed.exam, type, t, k)) unCarry(ed.exam, type, t, k);
   else holder[k] = !holder[k];
+}
+// 8つの列を歯列の並び（チャートと同じ向き）で並べる
+function areaMapHTML(ctx) {
+  const cell = (q, side) => {
+    const on = ctx.q === q && ctx.side === side;
+    const lab = side === 'b' ? '頬側' : q <= 2 ? '口蓋側' : '舌側';
+    return `<button class="area${on ? ' on' : ''}" data-area="${q}${side}">${QNAME[q]} ${lab}</button>`;
+  };
+  return `<div class="areamap">
+    <div class="ablock"><div class="ajaw">上顎</div><div class="agrid">${cell(1, 'b')}${cell(2, 'b')}${cell(1, 'l')}${cell(2, 'l')}</div></div>
+    <div class="ablock"><div class="ajaw">下顎</div><div class="agrid">${cell(4, 'l')}${cell(3, 'l')}${cell(4, 'b')}${cell(3, 'b')}</div></div>
+  </div>`;
 }
 function flashHTML() {
   if (!ed.flash) return '';
@@ -745,6 +760,11 @@ function onPadTap(e) {
     return touch();
   }
   if (ed.mode === 'bop') {
+    if (b.dataset.area) {
+      voice.ctx = { q: Number(b.dataset.area[0]), side: b.dataset.area[1] };
+      voiceMsg(`${ctxLabel(voice.ctx)} に切り替えました`);
+      return refresh();
+    }
     if (act !== 'bopclear') return;
     const before = ALL.map((t) => [t, { ...T[t].bop }]);
     for (const t of ALL) { T[t].bop = {}; for (const k of SITES) unCarry(ed.exam, 'bop', t, k); }
@@ -973,11 +993,19 @@ function voiceStop(silent = false) {
   voice.rec = null;
   voice.interim = '';
   if (r) try { r.stop(); } catch { /* 停止済み */ }
-  if (silent) voice.msg = '';
+  if (silent) { voice.msg = ''; voice.warn = ''; }
   renderVoice();
   if (view.name === 'editor' && $('#chart') && ed.exam) refresh(); // 出血だけモードの列の印を消す
 }
-function voiceMsg(m) { voice.msg = m; renderVoice(); }
+function voiceMsg(m) { voice.msg = m; voice.warn = ''; renderVoice(); }
+// 入力しなかった理由（聞き取れない・欠損など）は、帯を黄色にして大きく出す
+const WARN_RE = /入力していません|聞き取れません|欠損です|ありません|出血モードです|入力済み|入力できる言葉/;
+function setVoiceResult(raw, done, fallback) {
+  const warns = done.filter((d) => WARN_RE.test(d));
+  const oks = done.filter((d) => !WARN_RE.test(d));
+  voice.warn = (warns.length ? warns.join('／') : (done.length ? '' : fallback)).replace(/。入力していません/g, '（未入力）').replace(/（上下か番号が抜けています）/g, '');
+  voice.msg = `<b>「${esc(raw.trim())}」</b>${oks.length ? ` → ${esc(oks.slice(-8).join('、'))}` : ''}`;
+}
 function renderVoice() {
   const b = $('#mic');
   if (b) { const on = voice.on && voice.mode !== 'bop'; b.classList.toggle('rec', on); b.textContent = on ? '● 聞き取り中' : '🎤 ポケット'; }
@@ -985,9 +1013,11 @@ function renderVoice() {
   if (bb) { const on = voice.on && voice.mode === 'bop'; bb.classList.toggle('rec', on); bb.textContent = on ? '● 聞き取り中' : '🎤 出血'; }
   const v = $('#voicebar');
   if (!v) return;
-  v.hidden = !voice.on && !voice.msg;
-  v.innerHTML = `${voice.on ? '<span class="vdot"></span>' : ''}${voice.on && voice.mode === 'bop' && voice.ctx ? `<span class="vctx">出血入力中：${ctxLabel(voice.ctx)}</span>` : ''}<span class="vm">${voice.msg}</span>${voice.interim ? `<span class="vi">${esc(voice.interim)}…</span>` : ''}
-    <button class="tool undo vlogbtn" id="vlog">聞き取りの記録</button><button class="tool undo" id="vtest">読み上げテスト</button>`;
+  v.hidden = !voice.on && !voice.msg && !voice.warn;
+  v.classList.toggle('warn', !!voice.warn);
+  v.innerHTML = `<div class="vrow">${voice.on ? '<span class="vdot"></span>' : ''}${voice.on && voice.mode === 'bop' && voice.ctx ? `<span class="vctx">出血入力中：${ctxLabel(voice.ctx)}</span>` : ''}${voice.warn ? `<span class="vwarn">⚠ ${esc(voice.warn)}</span>` : ''}<span class="vm">${voice.msg}</span>${voice.interim ? `<span class="vi">${esc(voice.interim)}…</span>` : ''}
+    <button class="tool undo vlogbtn" id="vlog">聞き取りの記録</button><button class="tool undo" id="vtest">読み上げテスト</button></div>
+`;
   $('#vlog').onclick = showVoiceLog;
   $('#vtest').onclick = showVoiceTest;
 }
@@ -1163,7 +1193,7 @@ function handleBopSpeech(raw, provisional, dry) {
   if (dry) return { ops, done };
   if (ops.length) { voice.hist.push(ops); ed.undo = { kind: 'voice', ops }; ed.flash = '音声で入力しました'; }
   voice.lastResult = done.length ? done.join('、') : '入力できる言葉がありませんでした';
-  voice.msg = `<b>「${esc(raw.trim())}」</b> → ${esc(done.length ? done.slice(-8).join('、') : voice.lastResult)}`;
+  setVoiceResult(raw, done, voice.lastResult);
   touch();
   renderVoice();
   return ops;
@@ -1262,7 +1292,7 @@ function handleSpeech(raw, provisional = false, dry = false) {
   }
   const heard = `<b>「${esc(raw.trim())}」</b>`;
   voice.lastResult = done.length ? done.join('、') : '入力できる言葉がありませんでした';
-  voice.msg = `${heard} → ${esc(done.length ? done.slice(-8).join('、') : voice.lastResult)}`;
+  setVoiceResult(raw, done, voice.lastResult);
   touch();
   renderVoice();
   return ops;
