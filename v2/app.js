@@ -1019,6 +1019,8 @@ function stripConsumed(text) {
   return text.slice(i);
 }
 function onVoiceResults(items) {
+  // フットスイッチで取り消した文・乱れて捨てた文は、聞き取りが止まる（onend）まで何も扱わない
+  if (voice.discard) { voice.interim = ''; renderVoice(); return; }
   let interim = '', fin = false;
   for (const it of items) {
     if (it.isFinal) {
@@ -1052,6 +1054,7 @@ function armSilence() {
   const sec = silenceSec();
   if (!sec || !voice.on) return;
   voice.silTimer = setTimeout(() => {
+    if (voice.on && guiding && !voice.paused) { armSilence(); return; } // 音の案内の最中：終わってから区切る
     if (!voice.on || voice.paused || guiding || !(voice.prov || (voice.interim || '').trim())) return;
     cutRec(`${sec}秒の間`);
   }, sec * 1000);
@@ -1642,6 +1645,7 @@ function looksLikeNumbers(raw) {
 const shortSite = (s) => `${toothName(s.t)}${sideName(s.t, s.k[0])[0]}${POS[s.k[1]][0]}`;
 // 音声の取り消しは「最後の歯1本分」ずつ。エリアごとに確定するので、1回で1エリア分（21部位）が消えないように
 function popVoiceUndo() {
+  voice.session = null; // 文の途中で取り消したら、あとでiPadが書き換えても入れ直さない（言い直しを頼む）
   const last = voice.hist.pop();
   if (!last || !last.length) return null;
   const lt = last[last.length - 1].t;
@@ -1956,7 +1960,8 @@ document.addEventListener('keydown', (e) => {
       clearTimeout(voice.timer);
       undoProv();
       voice.discard = true;
-      cutRec();
+      voice.consumed = ''; voice.session = null; voice.interim = '';
+      if (voice.rec) try { voice.rec.stop(); } catch { /* 停止済み */ } // この文は捨てて、聞き取りをやり直す
       ed.flash = '話している途中の入力を取り消しました';
       touch();
       voiceMsg('話している途中の入力を取り消しました');
