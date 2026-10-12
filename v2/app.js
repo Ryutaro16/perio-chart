@@ -1144,7 +1144,7 @@ function setVoiceMode(mode) {
   voice.mode = mode;
   voice.bopTooth = null; voice.bopLast = null;
   undoProv();
-  if (mode === 'bop') { const c = ed.seq[ed.cur]; voice.ctx = { q: quad(c.t), side: c.k[0] }; }
+  if (mode === 'bop') voice.ctx = { q: 1, side: 'b' }; // 出血モードは、いつも右上 頬側から始める（2026-10-13 龍太郎の指定）
   if (voice.on || mode === 'bop') { ed.mode = mode; refresh(); }
 }
 function voiceStart() {
