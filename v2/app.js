@@ -1307,12 +1307,8 @@ function guide(items) {
 async function runGuide() {
   guiding = true;
   // 音（ポッ・チャイム・ブー）だけなら、聞き取りは止めずに鳴らす。言葉を読み上げるときだけ止める
-  if (guideQ.every((g) => !g.text)) {
-    while (guideQ.length) { const g = guideQ.shift(); if (g.tone) await playTone(g.tone); }
-    guiding = false;
-    if (guideQ.length) runGuide();
-    return;
-  }
+  while (guideQ.length && !guideQ[0].text) { const g = guideQ.shift(); if (g.tone) await playTone(g.tone); }
+  if (!guideQ.length) { guiding = false; renderVoice(); return; }
   await pauseRec();
   while (guideQ.length) {
     const g = guideQ.shift();
