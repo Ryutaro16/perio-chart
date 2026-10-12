@@ -99,7 +99,7 @@ const DB = {
 const GUIDE_DEFAULTS = {
   enabled: true, fail: true, area: true, start: true, // 全体／聞き取れなかったとき／エリアが変わったとき／始めたとき
   boundary: true, tooth: true, missing: true, done: true, // ポケットの道案内：区切り／歯の番号／欠損歯／全部位の完了
-  echo: true, okBeep: false, // 確認：復唱／正しく入ったときの小さな音
+  echo: false, okBeep: false, // 確認：復唱／正しく入ったときの小さな音
   where: true, modeVoice: true, foot: false, // 操作：「今どこ？」／声でモード切り替え／フットスイッチ
   rate: 'mid', // 声の速さ
 };
@@ -108,6 +108,7 @@ async function loadSettings() {
   const s = await DB.get('settings', 'settings');
   if (s) settings = { ...settings, ...s };
   settings.guide = { ...GUIDE_DEFAULTS, ...((s && s.guide) || {}) };
+  if ((settings.guideVer || 1) < 2) { settings.guide.echo = false; settings.guideVer = 2; if (s) await saveSettings(); } // 2026-10-12 復唱は初期オフに（龍太郎の判断）
 }
 const saveSettings = () => DB.put('settings', settings);
 
@@ -1602,7 +1603,7 @@ document.addEventListener('keydown', (e) => {
     ed.flash = '音声の入力を取り消しました';
     touch();
     voiceMsg('直前の音声入力を取り消しました');
-    if (guideOn('echo')) guide([{ text: '取り消しました' }]);
+    if (guideOn('enabled')) guide([{ text: '取り消しました' }]); // 取り消しの知らせは、復唱をオフにしても残す
   }
 });
 
