@@ -942,9 +942,11 @@ function voiceInterim(text) {
     undoProv();
     if (fresh) voice.cue = ed.cur; // 話し始め。ここから進んだぶんを合図する
     const before = { cur: ed.cur, lastSite: voice.lastSite, endedSite: voice.endedSite, ctx: voice.ctx ? { ...voice.ctx } : null };
+    voice.junkCut = false;
     const ops = handleSpeech(text, true);
     if (ops) voice.prov = { text, ops, ...before, guide: voice.lastGuide };
-    if (ppdCue() === 'area') cutRec();
+    // 読めない言葉で止まったときも、ここで文を確定させる。続けて言い直すと同じ文の後ろにつながり、何度言っても同じ所で止まるため
+    if (ppdCue() === 'area' || voice.junkCut) cutRec();
   }, VOICE_EARLY_MS);
 }
 function voiceFinal(text) {
@@ -1212,7 +1214,7 @@ function ppdGuide(cur0, cur1, ops, done, complete0, complete1, moved, jumped) {
   if (ops.length && guideOn('okBeep')) items.push({ tone: 'pop' });
   if (ops.length && ops.length <= ECHO_MAX && guideOn('echo')) items.push({ text: ops.map((o) => (o.field === 'ppd' ? String(T[o.t].ppd[o.k]) : flagWord(o, T))).join('、') });
   if (complete1 && !complete0) { if (guideOn('done')) items.push({ tone: 'chime', text: '全部位、入力しました' }); return finish(); }
-  if (cur0 === cur1) return finish();
+  if (cur0 === cur1 || done.some((d) => /聞き取れない言葉がありました/.test(d))) return finish(); // 読めない言葉で止まったときは「○番 遠心から、もう一度」だけ
   const a = ed.seq[cur0], b = ed.seq[cur1];
   if (moved) { if (guideOn('tooth')) items.push({ text: `${siteSpeech(b)}へ` }); return finish(); }
   if (jumped) return finish(); // 「右上6 口蓋側 近心 5」のように場所を指定して入れたときは、道案内しない
@@ -1547,6 +1549,7 @@ function handleSpeech(raw, provisional = false, dry = false) {
     else if (tk.type === 'junk') {
       if (blocked || !toks.slice(toks.indexOf(tk) + 1).some((t) => t.type === 'num')) continue;
       target = null; blocked = true;
+      if (provisional) voice.junkCut = true;
       const s = cur();
       done.push(`聞き取れない言葉がありました。${toothName(s.t)} ${POS[s.k[1]]}から入力していません`);
     } else if (tk.type === 'num') {
