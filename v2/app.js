@@ -1024,6 +1024,7 @@ function undoProv() {
     if (i >= 0) voice.hist.splice(i, 1);
   }
   ed.cur = p.cur; voice.lastSite = p.lastSite; voice.endedSite = p.endedSite;
+  voice.specTooth = p.specTooth; voice.bopTooth = p.bopTooth; voice.bopLast = p.bopLast;
   if (p.ctx) voice.ctx = { ...p.ctx };
 }
 function voiceInterim(text) {
@@ -1033,7 +1034,8 @@ function voiceInterim(text) {
     const fresh = !voice.prov;
     undoProv();
     if (fresh) voice.cue = ed.cur; // 話し始め。ここから進んだぶんを合図する
-    const before = { cur: ed.cur, lastSite: voice.lastSite, endedSite: voice.endedSite, ctx: voice.ctx ? { ...voice.ctx } : null };
+    const before = { cur: ed.cur, lastSite: voice.lastSite, endedSite: voice.endedSite, ctx: voice.ctx ? { ...voice.ctx } : null,
+      specTooth: voice.specTooth, bopTooth: voice.bopTooth, bopLast: voice.bopLast }; // 仮入力を戻すときに、言葉の続きの記憶も戻す
     voice.junkCut = false; voice.specCut = false;
     const ops = handleSpeech(text, true);
     if (ops) voice.prov = { text, ops, ...before, guide: voice.lastGuide };
