@@ -193,6 +193,29 @@ function pcrSVG(t, th, ex) {
   }).join('')}</svg>`;
 }
 
+const DIFF_MIN = 2; // 前回との差を表示する変化の大きさ（mm）
+function diffCounts(ex, prev) {
+  let better = 0, worse = 0;
+  if (!prev) return { better, worse };
+  for (const t of ALL) {
+    const th = ex.teeth[t], pt = prev.teeth[t];
+    if (th.missing || !pt || pt.missing) continue;
+    for (const k of SITES) {
+      if (th.ppd[k] == null || pt.ppd[k] == null) continue;
+      const d = th.ppd[k] - pt.ppd[k];
+      if (d >= DIFF_MIN) worse++; else if (d <= -DIFF_MIN) better++;
+    }
+  }
+  return { better, worse };
+}
+// その検査より前の、いちばん新しい検査
+async function findPrevExam(ex) {
+  const list = (await DB.byPatient(ex.patientId))
+    .filter((e) => !e.deletedAt && e.id !== ex.id && (e.date < ex.date || (e.date === ex.date && e.createdAt < ex.createdAt)))
+    .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt);
+  return list[0] || null;
+}
+
 function chartHTML(exam, o = {}) {
   const T = exam.teeth;
   // 引き継いだ値の薄い表示は画面だけ。印刷（o.print）では通常の濃さにする
@@ -211,7 +234,14 @@ function chartHTML(exam, o = {}) {
     if (o.cursor && o.cursor.t === t && o.cursor.k === k) c.push('cur');
     if (carried('ppd', t, k)) c.push('c');
     const dot = (type) => (th[type][k] ? `<i class="${type}${carried(type, t, k) ? ' c' : ''}"></i>` : '');
-    return `<td class="${c.join(' ')}" data-t="${t}" data-k="${k}">${v ?? ''}${dot('bop')}${dot('pus')}</td>`;
+    // 前回との差（DIFF_MIN mm以上変わった部位だけ）。深くなった＝悪化、浅くなった＝改善
+    let dif = '';
+    const pt = o.prev && o.prev.teeth[t];
+    if (pt && !pt.missing && pt.ppd[k] != null && v != null && Math.abs(v - pt.ppd[k]) >= DIFF_MIN) {
+      const d = v - pt.ppd[k];
+      dif = `<i class="dif ${d > 0 ? 'up' : 'dn'}">${d > 0 ? '+' : '−'}${Math.abs(d)}</i>`;
+    }
+    return `<td class="${c.join(' ')}" data-t="${t}" data-k="${k}">${v ?? ''}${dot('bop')}${dot('pus')}${dif}</td>`;
   })}</tr>`;
 
   const furRow = (row, side) => `<tr><th class="lab">分岐部</th>${subCells(row, side, 'f', (t, th, k, c) => {
@@ -381,6 +411,9 @@ async function showPatient(pid, showDeleted = false) {
         <dl><div><dt>カルテ番号</dt><dd>${esc(p.chartNo || '—')}</dd></div>
         <div><dt>生年月日</dt><dd>${p.birth ? `${fmtDate(p.birth)}（${ageAt(p.birth)}歳）` : '—'}</dd></div>
         ${p.note ? `<div><dt>メモ</dt><dd>${esc(p.note)}</dd></div>` : ''}</dl></div>
+      ${!showDeleted && live.length ? `<div class="row-tools"><h2>経過</h2><div class="grow"></div><button class="btn" id="prtTrend">経過を印刷（患者さん用）</button></div>
+        <div class="tgrid-cards">${trendCardsHTML([...live].reverse())}</div>
+        ${live.length < 2 ? '<p class="sub">2回目の検査から、推移と前回からの変化が出ます。</p>' : ''}` : ''}
       <div class="row-tools"><h2>${showDeleted ? '削除した検査' : '検査の記録（新しい順）'}</h2><div class="grow"></div>
         ${showDeleted ? '<button class="btn" id="tglDel">‹ 検査の記録に戻る</button>' : '<button class="btn primary big" id="newx">＋ 新しい検査を始める</button>'}</div>
       <div class="card tablewrap">${rows
@@ -389,6 +422,7 @@ async function showPatient(pid, showDeleted = false) {
       ${!showDeleted && dead.length ? `<p><button class="btn ghost" id="tglDel">削除した検査（${dead.length}件）を表示</button></p>` : ''}
     </main>`;
   $('#editp').onclick = () => patientDialog(p, () => showPatient(pid));
+  if ($('#prtTrend')) $('#prtTrend').onclick = () => printTrend(p, [...live].reverse());
   if ($('#newx')) $('#newx').onclick = () => newExamDialog(p, live[0]);
   if ($('#tglDel')) $('#tglDel').onclick = () => showPatient(pid, !showDeleted);
   $('main').onclick = async (e) => {
@@ -477,6 +511,7 @@ async function openEditor(examId) {
       <label class="mini">検査者 <input id="exby" value="${esc(exam.examiner || '')}" autocomplete="off"></label>
       <div class="grow"></div>
       <span id="savest" class="savest">保存済み</span>
+      <button class="btn" id="difbtn" hidden></button>
       <button class="btn mic" id="mic">🎤 音声入力</button>
       <button class="btn" id="prt">印刷</button>
       <button class="btn primary" id="done">完了</button>
@@ -485,6 +520,11 @@ async function openEditor(examId) {
     <div class="voicebar" id="voicebar" hidden></div>
     <div class="pad" id="pad"></div>
   </div>`;
+  ed.prev = await findPrevExam(exam);
+  ed.showDiff = !!ed.prev;
+  const difbtn = $('#difbtn');
+  difbtn.hidden = !ed.prev;
+  difbtn.onclick = () => { ed.showDiff = !ed.showDiff; refresh(); };
   const leave = async () => { voiceStop(true); await flushSave(); showPatient(patient.id); };
   $('#mic').onclick = voiceToggle;
   $('#back').onclick = leave;
@@ -503,8 +543,19 @@ function refresh() {
     cursor: m === 'ppd' ? ed.seq[ed.cur] : null,
     mobCursor: m === 'mob' ? MOB_SEQ[ed.mob] : null,
     furCursor: m === 'fur' ? FURC_SEQ[ed.fur] : null,
+    prev: ed.showDiff ? ed.prev : null,
   });
-  $('#stats').innerHTML = statsHTML(calcStats(ed.exam));
+  let diffNote = '';
+  if (ed.prev) {
+    const b = $('#difbtn');
+    b.textContent = ed.showDiff ? `✓ 前回（${fmtDate(ed.prev.date)}）との差` : '前回との差を表示';
+    b.classList.toggle('on', ed.showDiff);
+    if (ed.showDiff) {
+      const dc = diffCounts(ed.exam, ed.prev);
+      diffNote = `<span class="difnote">前回比（${DIFF_MIN}mm以上）：<i class="dif dn">−</i>改善 <b>${dc.better}</b>部位　<i class="dif up">+</i>悪化 <b>${dc.worse}</b>部位</span>`;
+    }
+  }
+  $('#stats').innerHTML = statsHTML(calcStats(ed.exam)) + diffNote;
   $('#pad').innerHTML = padHTML();
   ed.flash = '';
 }
@@ -1238,6 +1289,81 @@ function vtRender() {
     : '<p class="empty">まだ記録がありません</p>';
 }
 
+/* ================= 経過（時系列のグラフ） ================= */
+const TRENDS = [
+  { key: 'boppct', label: 'BOP（出血）', pct: true, better: 'down', desc: '検査で歯ぐきから出血した部位の割合。少ないほど炎症が落ち着いています。' },
+  { key: 'ge4pct', label: 'ポケット4mm以上', pct: true, better: 'down', desc: '歯周ポケットが4mm以上ある部位の割合。' },
+  { key: 'pcr', label: 'PCR（プラーク）', pct: true, better: 'down', desc: '歯の表面にプラーク（歯垢）が付いていた割合。少ないほど磨けています。' },
+  { key: 'mean', label: '平均ポケット', unit: 'mm', dec: 1, better: 'down', desc: '測ったすべての部位の、ポケットの深さの平均。' },
+  { key: 'ge6', label: 'ポケット6mm以上', unit: '部位', better: 'down', desc: '歯周ポケットが6mm以上ある部位の数。' },
+  { key: 'present', label: '現在歯数', unit: '本', better: 'up', desc: '残っている歯の数。' },
+  { key: 'furT', label: '分岐部病変', unit: '歯', better: 'down', desc: '奥歯の根の分かれ目に病変がある歯の数。' },
+];
+const fmtTrend = (m, v) => (v == null ? '—' : m.pct ? `${Math.round(v)}%` : m.dec ? `${v.toFixed(m.dec)}${m.unit}` : `${v}${m.unit}`);
+const SERIES = '#0d9488';
+// 前回からの変化。▼▲は向き、色は良し悪し（改善＝青、悪化＝橙）。文字は本文の色のまま
+function trendDelta(m, vals) {
+  const pts = vals.filter((p) => p.v != null);
+  if (pts.length < 2) return '';
+  const a = pts[pts.length - 2].v, b = pts[pts.length - 1].v;
+  const d = m.pct ? Math.round(b) - Math.round(a) : m.dec ? Math.round((b - a) * 10) / 10 : b - a;
+  if (d === 0) return '<span class="tdelta"><span class="ic same">＝</span>前回と同じ</span>';
+  const good = (d < 0) === (m.better === 'down');
+  const amt = m.pct ? `${Math.abs(d)}ポイント` : m.dec ? `${Math.abs(d).toFixed(m.dec)}${m.unit}` : `${Math.abs(d)}${m.unit}`;
+  return `<span class="tdelta"><span class="ic ${good ? 'good' : 'bad'}">${d < 0 ? '▼' : '▲'}</span>前回より${amt}${d < 0 ? '減' : '増'}（${good ? '改善' : '悪化'}）</span>`;
+}
+function niceMax(v) { if (v <= 4) return 4; if (v <= 5) return 5; const step = v <= 10 ? 2 : v <= 20 ? 5 : 10; return Math.ceil(v / step) * step; }
+function lineChartSVG(m, vals, opt = {}) {
+  const W = opt.w || 320, H = opt.h || 140, L = 34, R = 14, T = 12, B = 24;
+  const pts = vals.map((p, i) => ({ ...p, i })).filter((p) => p.v != null);
+  if (!pts.length) return '<p class="tempty">まだ記録がありません</p>';
+  const max = m.pct ? 100 : niceMax(Math.max(...pts.map((p) => p.v)) * 1.1);
+  const ticks = m.pct ? [0, 50, 100] : [0, max / 2, max];
+  const tms = pts.map((p) => new Date(p.date).getTime());
+  const t0 = Math.min(...tms), t1 = Math.max(...tms);
+  const x = (tm) => (t1 === t0 ? (L + W - R) / 2 : L + ((tm - t0) / (t1 - t0)) * (W - L - R));
+  const y = (v) => T + (1 - v / max) * (H - T - B);
+  const xy = pts.map((p, j) => [x(tms[j]), y(p.v)]);
+  const line = xy.map(([a, b], j) => `${j ? 'L' : 'M'}${a.toFixed(1)},${b.toFixed(1)}`).join('');
+  const area = xy.length > 1 ? `${line}L${xy[xy.length - 1][0].toFixed(1)},${y(0)}L${xy[0][0].toFixed(1)},${y(0)}Z` : '';
+  const tl = (v) => (m.pct ? `${v}%` : Number.isInteger(v) ? v : v.toFixed(1));
+  const dlab = (d) => d.slice(2).replace(/-/g, '/'); // 26/03/02
+  const last = xy[xy.length - 1];
+  const xlabels = pts.length === 1 ? [[last[0], pts[0].date]] : [[xy[0][0], pts[0].date], [last[0], pts[pts.length - 1].date]];
+  return `<svg class="tsvg" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(m.label)}の推移">
+    ${ticks.map((v) => `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" class="tgrid"/><text x="${L - 6}" y="${y(v) + 3.5}" class="tax" text-anchor="end">${tl(v)}</text>`).join('')}
+    ${xlabels.map(([xx, d], j) => `<text x="${xx}" y="${H - 6}" class="tax" text-anchor="${pts.length === 1 ? 'middle' : j ? 'end' : 'start'}">${dlab(d)}</text>`).join('')}
+    ${area ? `<path d="${area}" fill="${SERIES}" fill-opacity="0.1"/>` : ''}
+    <path d="${line}" fill="none" stroke="${SERIES}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    ${xy.map(([a, b]) => `<circle cx="${a}" cy="${b}" r="4" fill="${SERIES}" stroke="#fff" stroke-width="2"/>`).join('')}
+    ${opt.noHover ? '' : xy.map(([a, b], j) => `<circle cx="${a}" cy="${b}" r="16" fill="transparent" data-tip="${fmtDate(pts[j].date)}　${esc(m.label)} ${fmtTrend(m, pts[j].v)}"/>`).join('')}
+  </svg>`;
+}
+function trendCardsHTML(liveAsc, opt = {}) {
+  const stats = liveAsc.map((e) => ({ date: e.date, s: calcStats(e) }));
+  return TRENDS.filter((m) => !opt.keys || opt.keys.includes(m.key)).map((m) => {
+    const vals = stats.map(({ date, s }) => ({ date, v: s[m.key] }));
+    const latest = [...vals].reverse().find((p) => p.v != null);
+    return `<div class="tcard"><div class="ttitle">${esc(m.label)}</div>
+      <div class="tval">${latest ? fmtTrend(m, latest.v) : '—'}</div>${trendDelta(m, vals)}
+      ${lineChartSVG(m, vals, opt)}</div>`;
+  }).join('');
+}
+// グラフの点に触れると、日付と値を出す
+document.addEventListener('pointerover', (e) => { const el = e.target.closest && e.target.closest('[data-tip]'); if (el) showTip(el); });
+document.addEventListener('pointerout', (e) => { if (e.target.closest && e.target.closest('[data-tip]')) hideTip(); });
+document.addEventListener('click', (e) => { const el = e.target.closest && e.target.closest('[data-tip]'); if (el) showTip(el); else hideTip(); });
+function showTip(el) {
+  let tip = $('#tip');
+  if (!tip) { tip = document.createElement('div'); tip.id = 'tip'; document.body.appendChild(tip); }
+  tip.textContent = el.dataset.tip;
+  const r = el.getBoundingClientRect();
+  tip.style.left = `${Math.min(window.innerWidth - 10, Math.max(10, r.left + r.width / 2))}px`;
+  tip.style.top = `${r.top - 8}px`;
+  tip.hidden = false;
+}
+function hideTip() { const tip = $('#tip'); if (tip) tip.hidden = true; }
+
 /* ================= 印刷 ================= */
 function printHTML(p, ex) {
   const age = ageAt(p.birth, ex.date);
@@ -1253,8 +1379,38 @@ function printHTML(p, ex) {
       <span><i class="lg fu"></i>根分岐部病変（Lindhe分類 Ⅰ〜Ⅲ度）</span><span><i class="lg pl"></i>プラーク付着</span>
       <span>動揺度 0〜3</span><span>斜線：欠損歯</span></div>`;
 }
+function setPage(orientation) {
+  let st = $('#pagestyle');
+  if (!st) { st = document.createElement('style'); st.id = 'pagestyle'; document.head.appendChild(st); }
+  st.textContent = `@media print { @page { size: A4 ${orientation}; margin: ${orientation === 'portrait' ? '10mm 11mm' : '8mm 9mm'}; } }`;
+}
 async function printExam(p, ex) {
+  setPage('landscape');
+  document.body.classList.remove('pr-portrait');
   $('#print').innerHTML = printHTML(p, ex);
+  setTimeout(() => window.print(), 50);
+}
+// 患者さん説明用（A4縦）：前回との比較表・推移グラフ・前回との差つきのチャート・コメント欄
+function trendSheetHTML(p, liveAsc) {
+  const cur = liveAsc[liveAsc.length - 1], prev = liveAsc.length > 1 ? liveAsc[liveAsc.length - 2] : null;
+  const sc = calcStats(cur), sp = prev ? calcStats(prev) : null;
+  const rows = TRENDS.map((m) => {
+    const vals = liveAsc.map((e) => ({ date: e.date, v: calcStats(e)[m.key] }));
+    return `<tr><th>${esc(m.label)}</th><td>${sp ? fmtTrend(m, sp[m.key]) : '—'}</td><td class="now">${fmtTrend(m, sc[m.key])}</td><td>${trendDelta(m, vals) || '—'}</td><td class="desc">${esc(m.desc)}</td></tr>`;
+  }).join('');
+  const dc = diffCounts(cur, prev);
+  return `<div class="pr-head"><div class="pr-title">歯周病検査の結果と経過</div><div class="pr-clinic">${esc(settings.clinicName)}</div></div>
+    <div class="ts-who"><b>${esc(p.name)}</b> 様　　今回の検査：${fmtDate(cur.date)}${prev ? `　　前回：${fmtDate(prev.date)}` : ''}　　検査の回数：${liveAsc.length}回</div>
+    <table class="ts-table"><thead><tr><th>項目</th><th>前回</th><th>今回</th><th>変化</th><th>見かた</th></tr></thead><tbody>${rows}</tbody></table>
+    ${liveAsc.length > 1 ? `<div class="ts-charts">${trendCardsHTML(liveAsc, { keys: ['boppct', 'ge4pct', 'pcr', 'mean'], noHover: true, w: 240, h: 120 })}</div>` : ''}
+    <div class="ts-sub">今回のチャート${prev ? `（前回より${DIFF_MIN}mm以上変わった部位に印：<i class="dif dn">−</i>浅くなった ${dc.better}部位／<i class="dif up">+</i>深くなった ${dc.worse}部位）` : ''}</div>
+    ${chartHTML(cur, { print: true, prev })}
+    <div class="ts-comment"><div>担当者より</div></div>`;
+}
+function printTrend(p, liveAsc) {
+  setPage('portrait');
+  document.body.classList.add('pr-portrait');
+  $('#print').innerHTML = trendSheetHTML(p, liveAsc);
   setTimeout(() => window.print(), 50);
 }
 
@@ -1445,7 +1601,8 @@ async function reopenView() {
     const { patient, exams } = makeDemo();
     settings.clinicName = '（医院名）';
     document.body.classList.add('print-sample');
-    $('#print').innerHTML = printHTML(patient, exams[0]);
+    if (location.search.includes('trend')) { setPage('portrait'); document.body.classList.add('pr-portrait'); $('#print').innerHTML = trendSheetHTML(patient, exams); }
+    else { setPage('landscape'); $('#print').innerHTML = printHTML(patient, exams[0]); }
     return;
   }
   try { await DB.open(); } catch (err) {

@@ -233,6 +233,29 @@ dialog::backdrop { background: rgba(15, 23, 42, .35); }
 .chart td.f.on.c { background: #eef3ff; color: #93a8de; }
 .chart i.c { opacity: .35; }
 .pcrsvg polygon.on.c { fill: #d9cdfc; }
+/* 前回との差（+悪化／−改善）。記号の向き（+・−）と色の両方で示す */
+.chart i.dif { position: absolute; left: 1px; bottom: 0; font-size: 10px; font-style: normal; font-weight: 800; line-height: 1.1; }
+i.dif.up { color: #c2410c; }
+i.dif.dn { color: #2563eb; }
+.difnote { color: var(--sub); }
+.difnote i.dif { font-style: normal; font-weight: 800; }
+.btn.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+/* 経過のグラフ */
+.tgrid-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
+.tcard { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px 6px; }
+.ttitle { font-size: 13px; color: var(--sub); font-weight: 600; }
+.tval { font-size: 26px; font-weight: 800; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.tdelta { display: block; font-size: 13px; color: var(--ink); margin-top: 2px; }
+.tdelta .ic { font-weight: 800; margin-right: 3px; }
+.ic.good { color: #2563eb; }
+.ic.bad { color: #c2410c; }
+.ic.same { color: var(--sub); }
+.tsvg { width: 100%; height: auto; display: block; margin-top: 6px; }
+.tsvg .tgrid { stroke: #e6e9ee; stroke-width: 1; }
+.tsvg .tax { font-size: 10px; fill: #7a8594; }
+.tempty { color: var(--sub); font-size: 13px; margin: 18px 0; }
+#tip { position: fixed; z-index: 60; transform: translate(-50%, -100%); background: #1f2933; color: #fff; font-size: 13px; padding: 5px 9px; border-radius: 8px; pointer-events: none; white-space: nowrap; }
+#tip[hidden] { display: none; }
 .chart i.bop { position: absolute; top: 2px; right: 2px; width: 7px; height: 7px; border-radius: 50%; background: var(--bop); }
 .chart i.pus {
   position: absolute; bottom: 2px; right: 2px; width: 0; height: 0;
@@ -271,7 +294,6 @@ dialog::backdrop { background: rgba(15, 23, 42, .35); }
 /* ---------- 印刷 ---------- */
 #print { display: none; }
 @media print {
-  @page { size: A4 landscape; margin: 8mm 9mm; }
   html, body { background: #fff; }
   #app, #dlg, #update { display: none !important; }
   #print { display: block; }
@@ -308,3 +330,33 @@ dialog::backdrop { background: rgba(15, 23, 42, .35); }
 .lg.p6 { background: var(--p6); }
 .lg.pl { background: var(--plaque); }
 .lg.fu { background: #dbe6ff; }
+/* 患者さん説明用（A4縦） */
+.ts-who { font-size: 11pt; margin: 1mm 0 3mm; }
+.ts-who b { font-size: 13pt; }
+.ts-table { width: 100%; border-collapse: collapse; font-size: 9pt; margin-bottom: 2.5mm; }
+.ts-table th, .ts-table td { border: .2mm solid #bbb; padding: .8mm 1.8mm; text-align: left; vertical-align: middle; }
+.ts-table tbody th { white-space: nowrap; }
+.ts-table td:nth-child(4) { white-space: nowrap; }
+.ts-table thead th { background: #f2f4f6; font-size: 8.5pt; color: #444; }
+.ts-table td.now { font-weight: 800; font-size: 11pt; }
+.ts-table td.desc { font-size: 7.5pt; color: #444; }
+.ts-table .tdelta { font-size: 8.5pt; }
+.ts-charts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2mm; margin-bottom: 2.5mm; }
+.ts-charts .tcard { border: .2mm solid #bbb; border-radius: 1.5mm; padding: 2mm 3mm 1mm; }
+.ts-charts .tval { font-size: 12pt; }
+.ts-charts .ttitle { font-size: 8pt; }
+.ts-charts .tdelta { font-size: 6.5pt; }
+.ts-charts .tsvg .tax { font-size: 15px; }
+.ts-sub { font-size: 9pt; margin: 1mm 0 1.5mm; font-weight: 600; }
+.ts-sub i.dif { font-style: normal; font-weight: 800; }
+.ts-comment { border: .3mm solid #999; border-radius: 1.5mm; height: 38mm; margin-top: 3mm; padding: 1.5mm 3mm; font-size: 9pt; color: #444; }
+body.pr-portrait #print .chart col.labc { width: 11mm; }
+body.pr-portrait #print .chart th.lab { font-size: 6pt; }
+body.pr-portrait #print .chart td.s { height: 6.4mm; font-size: 8.5pt; }
+body.pr-portrait #print .chart td.num { height: 4mm; font-size: 7pt; }
+body.pr-portrait #print .chart td.mob { height: 4.6mm; font-size: 7.5pt; }
+body.pr-portrait #print .chart td.f { height: 4mm; font-size: 7pt; }
+body.pr-portrait #print .chart td.pcr { height: 6.4mm; }
+body.pr-portrait #print .pcrsvg { width: 5.4mm; height: 5.4mm; }
+body.pr-portrait #print .chart i.dif { font-size: 6pt; }
+.print-sample.pr-portrait #print { width: 188mm; }
