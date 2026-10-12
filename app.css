@@ -97,6 +97,12 @@ h2 { font-size: 17px; margin: 0 0 10px; }
 /* ---------- 設定 ---------- */
 .radio { display: flex; gap: 10px; align-items: flex-start; padding: 10px 0; border-bottom: 1px solid var(--line-soft); }
 .radio:last-child { border-bottom: 0; }
+.sw { display: flex; gap: 12px; align-items: flex-start; padding: 9px 0; border-bottom: 1px solid var(--line-soft); }
+.sw input { width: 24px; height: 24px; margin-top: 1px; flex: none; accent-color: var(--accent); }
+.sw small { display: block; color: var(--sub); font-size: 13px; margin-top: 2px; }
+.sw.dis { opacity: .45; }
+.swgroup { margin-top: 10px; }
+.swh { font-size: 13px; font-weight: 700; color: var(--accent); margin-top: 6px; }
 .radio input { width: 22px; height: 22px; margin-top: 2px; }
 .radio small { display: block; color: var(--sub); font-size: 13px; margin-top: 2px; }
 
@@ -133,6 +139,7 @@ dialog::backdrop { background: rgba(15, 23, 42, .35); }
 .voicebar.warn .vm { font-size: 13px; color: var(--sub); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .voicebar[hidden] { display: none; }
 .voicebar .vi { color: var(--sub); }
+.voicebar .vpause { flex: none; background: #e0f2fe; color: #075985; font-weight: 700; padding: 2px 10px; border-radius: 8px; max-width: 30%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .voicebar .vctx { flex: none; background: #dc2626; color: #fff; font-weight: 800; font-size: 20px; padding: 3px 14px; border-radius: 10px; }
 /* 出血タブの歯列の地図 */
 .areamap { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 2px 0 2px; }

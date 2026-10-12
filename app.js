@@ -95,8 +95,20 @@ const DB = {
   byPatient(pid) { return this.req(this.store('exams').index('patientId').getAll(pid)); },
 };
 
-let settings = { key: 'settings', clinicName: '', order: 'z', lastBackupAt: null, lastExaminer: '' };
-async function loadSettings() { const s = await DB.get('settings', 'settings'); if (s) settings = { ...settings, ...s }; }
+// 音声の案内の初期設定（設定画面で項目ごとにオン・オフ）
+const GUIDE_DEFAULTS = {
+  enabled: true, fail: true, area: true, start: true, // 全体／聞き取れなかったとき／エリアが変わったとき／始めたとき
+  boundary: true, tooth: true, missing: true, done: true, // ポケットの道案内：区切り／歯の番号／欠損歯／全部位の完了
+  echo: true, okBeep: false, // 確認：復唱／正しく入ったときの小さな音
+  where: true, modeVoice: true, foot: false, // 操作：「今どこ？」／声でモード切り替え／フットスイッチ
+  rate: 'mid', // 声の速さ
+};
+let settings = { key: 'settings', clinicName: '', order: 'z', lastBackupAt: null, lastExaminer: '', guide: { ...GUIDE_DEFAULTS } };
+async function loadSettings() {
+  const s = await DB.get('settings', 'settings');
+  if (s) settings = { ...settings, ...s };
+  settings.guide = { ...GUIDE_DEFAULTS, ...((s && s.guide) || {}) };
+}
 const saveSettings = () => DB.put('settings', settings);
 
 /* ================= 検査データ ================= */
@@ -902,16 +914,17 @@ function voiceInterim(text) {
     undoProv();
     const before = { cur: ed.cur, lastSite: voice.lastSite, endedSite: voice.endedSite, ctx: voice.ctx ? { ...voice.ctx } : null };
     const ops = handleSpeech(text, true);
-    if (ops) voice.prov = { text, ops, ...before };
+    if (ops) voice.prov = { text, ops, ...before, guide: voice.lastGuide };
   }, VOICE_EARLY_MS);
 }
 function voiceFinal(text) {
   clearTimeout(voice.timer);
   const startIdx = voice.prov ? voice.prov.cur : ed.cur; // 話し始めたときのカーソル
-  if (voice.prov && sameSpeech(voice.prov.text, text)) { voice.prov = null; addVoiceLog(text, startIdx); return; } // 仮入力のまま確定
+  if (voice.prov && sameSpeech(voice.prov.text, text)) { const g = voice.prov.guide; voice.prov = null; addVoiceLog(text, startIdx); guide(g); return; } // 仮入力のまま確定
   undoProv(); // 仮入力と違う文で確定したら、仮入力を戻してから入れ直す
   handleSpeech(text);
   addVoiceLog(text, startIdx);
+  guide(voice.lastGuide);
 }
 const VOICE_LOG_MAX = 100;
 function addVoiceLog(text, startIdx) {
@@ -948,7 +961,11 @@ function showVoiceLog() {
 function voiceToggle(mode = 'ppd') {
   if (voice.on && voice.mode === mode) { voiceStop(); return; }
   setVoiceMode(mode);
-  if (!voice.on) voiceStart(); else { voiceMsg(mode === 'bop' ? '「右上 頬側」「7 遠心 近心」のように話してください' : '「3、3、4プラス」のように話してください'); }
+  if (!voice.on) voiceStart();
+  else {
+    voiceMsg(mode === 'bop' ? '「右上 頬側」「7 遠心 近心」のように話してください' : '「3、3、4プラス」のように話してください');
+    if (guideOn('start')) guide([{ tone: 'chime', text: startText() }]);
+  }
 }
 function setVoiceMode(mode) {
   voice.mode = mode;
@@ -957,6 +974,7 @@ function setVoiceMode(mode) {
   if (voice.on || mode === 'bop') { ed.mode = mode; refresh(); }
 }
 function voiceStart() {
+  unlockAudio();
   if (!SR) { voiceMsg('この画面では音声認識が使えません。iPadは Safari のタブで、Macは Safari か Chrome で開いてください'); return; }
   const r = new SR();
   r.lang = 'ja-JP';
@@ -975,7 +993,10 @@ function voiceStart() {
     } else voiceMsg('音声認識のエラー：' + esc(e.error));
   };
   // 無音が続くと止まることがあるので、聞き取り中は自動で再開する
-  r.onend = () => { if (voice.on && voice.rec === r) setTimeout(() => { if (voice.on && voice.rec === r) try { r.start(); } catch { /* 再開済み */ } }, 250); };
+  r.onend = () => {
+    if (voice.paused) { if (voice.pauseDone) voice.pauseDone(); return; }
+    if (voice.on && voice.rec === r) setTimeout(() => { if (voice.on && voice.rec === r && !voice.paused) try { r.start(); } catch { /* 再開済み */ } }, 250);
+  };
   voice.rec = r;
   voice.on = true;
   voice.lastSite = null;
@@ -984,9 +1005,13 @@ function voiceStart() {
   const want = voice.mode === 'bop' ? 'bop' : 'ppd';
   if (ed.mode !== want) { ed.mode = want; refresh(); }
   voiceMsg(voice.mode === 'bop' ? '「右上 頬側」「7 遠心 近心」のように話してください' : '「3、3、4プラス」のように話してください');
+  if (guideOn('start')) guide([{ tone: 'chime', text: startText() }]);
 }
 function voiceStop(silent = false) {
   clearTimeout(voice.timer);
+  guideQ.length = 0;
+  voice.paused = false; voice.speaking = '';
+  try { if (window.speechSynthesis) speechSynthesis.cancel(); } catch { /* なし */ }
   voice.prov = null;
   voice.on = false;
   const r = voice.rec;
@@ -1006,6 +1031,162 @@ function setVoiceResult(raw, done, fallback) {
   voice.warn = (warns.length ? warns.join('／') : (done.length ? '' : fallback)).replace(/。入力していません/g, '（未入力）').replace(/（上下か番号が抜けています）/g, '');
   voice.msg = `<b>「${esc(raw.trim())}」</b>${oks.length ? ` → ${esc(oks.slice(-8).join('、'))}` : ''}`;
 }
+/* ---- 音声の案内（チャイム・警告音と、読み上げ） ---- */
+// 案内のあいだは聞き取りを止め（アプリ自身の声を拾わないため）、言い終わったら再開する
+const guideOn = (key) => { const g = settings.guide; return g.enabled && !voice.muted && g[key]; };
+let audioCtx = null;
+// iPadでは、音を出す前に一度ボタン操作の中で準備しておく必要がある
+function unlockAudio() {
+  try { audioCtx ||= new (window.AudioContext || window.webkitAudioContext)(); audioCtx.resume(); } catch { /* 音が出せない環境 */ }
+  try { if (window.speechSynthesis) speechSynthesis.speak(new SpeechSynthesisUtterance('')); } catch { /* 読み上げが使えない環境 */ }
+}
+const TONES = { chime: [[880, 0, 0.13], [1318, 0.14, 0.22]], buzz: [[196, 0, 0.3]], pop: [[1100, 0, 0.06]] };
+function playTone(kind) {
+  return new Promise((res) => {
+    if (!audioCtx) { res(); return; }
+    const t0 = audioCtx.currentTime + 0.02;
+    let end = 0;
+    for (const [f, at, dur] of TONES[kind]) {
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.type = kind === 'buzz' ? 'square' : 'sine';
+      o.frequency.value = f;
+      g.gain.setValueAtTime(0.0001, t0 + at);
+      g.gain.exponentialRampToValueAtTime(kind === 'buzz' ? 0.12 : 0.3, t0 + at + 0.015);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + at + dur);
+      o.connect(g); g.connect(audioCtx.destination);
+      o.start(t0 + at); o.stop(t0 + at + dur + 0.02);
+      end = Math.max(end, at + dur);
+    }
+    setTimeout(res, (end + 0.08) * 1000);
+  });
+}
+// 読み上げでは、歯科の言葉をかなで読ませる
+const READING = [[/頬側/g, 'きょうそく'], [/口蓋側/g, 'こうがいそく'], [/舌側/g, 'ぜっそく'], [/近心/g, 'きんしん'], [/遠心/g, 'えんしん'], [/中央/g, 'ちゅうおう'],
+  [/欠損/g, 'けっそん'], [/排膿/g, 'はいのう'], [/右上/g, 'みぎうえ'], [/左上/g, 'ひだりうえ'], [/右下/g, 'みぎした'], [/左下/g, 'ひだりした']];
+const RATE = { normal: 1.0, mid: 1.2, fast: 1.45 };
+function jaVoice() {
+  const vs = window.speechSynthesis ? speechSynthesis.getVoices() : [];
+  return vs.find((v) => v.lang === 'ja-JP' && /Kyoko|O-ren|Otoya|Hattori/.test(v.name)) || vs.find((v) => (v.lang || '').startsWith('ja'));
+}
+function say(text) {
+  return new Promise((res) => {
+    if (!text || !window.speechSynthesis) { res(); return; }
+    let r = text;
+    for (const [re, to] of READING) r = r.replace(re, to);
+    const u = new SpeechSynthesisUtterance(r);
+    u.lang = 'ja-JP';
+    u.rate = RATE[settings.guide.rate] || 1.2;
+    const v = jaVoice();
+    if (v) u.voice = v;
+    let fin = false;
+    const done = () => { if (!fin) { fin = true; res(); } };
+    u.onend = done; u.onerror = done;
+    speechSynthesis.speak(u);
+    setTimeout(done, 1500 + r.length * 200); // 読み上げの終わりが届かないときの保険
+  });
+}
+const guideQ = [];
+let guiding = false;
+function guide(items) {
+  const list = (items || []).filter((x) => x && (x.tone || x.text));
+  if (!list.length) return;
+  guideQ.push(...list);
+  if (!guiding) runGuide();
+}
+async function runGuide() {
+  guiding = true;
+  await pauseRec();
+  while (guideQ.length) {
+    const g = guideQ.shift();
+    if (g.tone) await playTone(g.tone);
+    if (g.text) { voice.speaking = g.text; renderVoice(); await say(g.text); }
+  }
+  voice.speaking = '';
+  guiding = false;
+  resumeRec();
+}
+function pauseRec() {
+  return new Promise((res) => {
+    const r = voice.rec;
+    if (!r || !voice.on) { res(); return; }
+    voice.paused = true;
+    clearTimeout(voice.timer);
+    let fin = false;
+    const done = () => { if (!fin) { fin = true; voice.pauseDone = null; res(); } };
+    voice.pauseDone = done;
+    try { r.stop(); } catch { done(); }
+    setTimeout(done, 900);
+    renderVoice();
+  });
+}
+function resumeRec() {
+  if (!voice.paused) return;
+  voice.paused = false;
+  if (voice.on && voice.rec) try { voice.rec.start(); } catch { /* 開始済み。止まっていれば onend で再開する */ }
+  renderVoice();
+}
+// 入力しなかった理由を、短い言葉にする（雑音や会話で何も入らなかったときは鳴らさない）
+function failSpeech(w) {
+  const num = (x) => x.replace(/(右上|左上|右下|左下)/g, '');
+  let m;
+  if ((m = w.match(/^(.+?)の部位が聞き取れません/))) return `${num(m[1])}番、部位をもう一度`;
+  if ((m = w.match(/^(.+?)は欠損です/))) return `${num(m[1])}番は欠損です`;
+  if (/歯の番号が聞き取れません|番の歯はありません/.test(w)) return '番号をもう一度';
+  if (/歯の名前が聞き取れません/.test(w)) return '歯の名前をもう一度';
+  if (/近心・遠心・中央が聞き取れません/.test(w)) return '部位をもう一度';
+  if (/出血モードです/.test(w)) return '出血モードです';
+  if (/入力済み/.test(w)) return '最後まで入力済みです';
+  if (/取り消せる入力がありません/.test(w)) return '取り消せる入力がありません';
+  return null;
+}
+const siteSpeech = (s) => `${toothName(s.t)}、${sideName(s.t, s.k[0])}、${POS[s.k[1]]}`;
+const startText = () => (voice.mode === 'bop' ? `出血モード、${ctxLabel(voice.ctx)}から` : `ポケット、${siteSpeech(ed.seq[ed.cur])}から`);
+const areaName = (s) => `${QNAME[quad(s.t)]}${sideName(s.t, s.k[0])}`;
+const flagWord = (o, T) => (o.field === 'pus' ? '排膿' : T[o.t].bop[o.k] ? '出血' : '出血なし');
+// ポケットの音声入力のあとの案内：警告／小さな音／復唱／道案内（区切り・歯の番号・欠損歯・完了）
+function ppdGuide(cur0, cur1, ops, done, complete0, complete1, moved, jumped) {
+  const T = ed.exam.teeth, items = [];
+  const fails = [...new Set(done.map(failSpeech).filter(Boolean))];
+  const failItem = fails.length && guideOn('fail') ? { tone: 'buzz', text: fails.join('。') } : null;
+  const finish = () => { if (failItem) items.push(failItem); return items; }; // 言い直すことは最後に伝える
+  if (ops.length && guideOn('okBeep')) items.push({ tone: 'pop' });
+  if (ops.length && guideOn('echo')) items.push({ text: ops.map((o) => (o.field === 'ppd' ? String(T[o.t].ppd[o.k]) : flagWord(o, T))).join('、') });
+  if (complete1 && !complete0) { if (guideOn('done')) items.push({ tone: 'chime', text: '全部位、入力しました' }); return finish(); }
+  if (cur0 === cur1) return finish();
+  const a = ed.seq[cur0], b = ed.seq[cur1];
+  if (moved) { if (guideOn('tooth')) items.push({ text: `${siteSpeech(b)}へ` }); return finish(); }
+  if (jumped) return finish(); // 「右上6 口蓋側 近心 5」のように場所を指定して入れたときは、道案内しない
+  if (areaName(a) !== areaName(b)) {
+    if (guideOn('boundary')) items.push({ tone: 'chime', text: `${areaName(a)}、終わり。次、${areaName(b)}${guideOn('tooth') ? `、${b.t % 10}番から` : ''}` });
+    else if (guideOn('tooth')) items.push({ text: `${b.t % 10}番` });
+  } else if (a.t !== b.t) {
+    const skipped = [];
+    if (cur1 > cur0) for (let j = cur0 + 1; j < cur1; j++) { const s = ed.seq[j]; if (T[s.t].missing && !skipped.includes(s.t)) skipped.push(s.t); }
+    if (skipped.length && guideOn('missing')) items.push({ text: `${skipped.map((t) => t % 10).join('、')}番は欠損、${b.t % 10}番へ` });
+    else if (guideOn('tooth')) items.push({ text: `${b.t % 10}番` });
+  }
+  return finish();
+}
+// 出血だけの音声入力のあとの案内：警告／エリアの変更／小さな音／復唱
+function bopGuide(ctx0, ctx1, ops, done) {
+  const T = ed.exam.teeth, items = [];
+  const fails = [...new Set(done.map(failSpeech).filter(Boolean))];
+  if ((ctx0.q !== ctx1.q || ctx0.side !== ctx1.side) && guideOn('area')) items.push({ tone: 'chime', text: ctxLabel(ctx1).replace(' ', '、') });
+  if (ops.length && guideOn('okBeep')) items.push({ tone: 'pop' });
+  if (ops.length && guideOn('echo')) {
+    const byTooth = [];
+    for (const o of ops) {
+      let g = byTooth.find((x) => x.t === o.t);
+      if (!g) { g = { t: o.t, words: [] }; byTooth.push(g); }
+      const w = o.field === 'bop' && T[o.t].bop[o.k] ? POS[o.k[1]] : `${POS[o.k[1]]} ${flagWord(o, T)}`;
+      if (!g.words.includes(w)) g.words.push(w);
+    }
+    items.push({ text: byTooth.map((g) => `${g.t % 10}番 ${g.words.join(' ')}`).join('、') });
+  }
+  if (fails.length && guideOn('fail')) items.push({ tone: 'buzz', text: fails.join('。') }); // 言い直すことは最後に伝える
+  return items;
+}
+
 function renderVoice() {
   const b = $('#mic');
   if (b) { const on = voice.on && voice.mode !== 'bop'; b.classList.toggle('rec', on); b.textContent = on ? '● 聞き取り中' : '🎤 ポケット'; }
@@ -1016,8 +1197,10 @@ function renderVoice() {
   v.hidden = !voice.on && !voice.msg && !voice.warn;
   v.classList.toggle('warn', !!voice.warn);
   v.innerHTML = `<div class="vrow">${voice.on ? '<span class="vdot"></span>' : ''}${voice.on && voice.mode === 'bop' && voice.ctx ? `<span class="vctx">出血入力中：${ctxLabel(voice.ctx)}</span>` : ''}${voice.warn ? `<span class="vwarn">⚠ ${esc(voice.warn)}</span>` : ''}<span class="vm">${voice.msg}</span>${voice.interim ? `<span class="vi">${esc(voice.interim)}…</span>` : ''}
-    <button class="tool undo vlogbtn" id="vlog">聞き取りの記録</button><button class="tool undo" id="vtest">読み上げテスト</button></div>
+    ${voice.speaking ? `<span class="vpause">🔈 ${esc(voice.speaking)}</span>` : ''}
+    <button class="tool undo vlogbtn" id="vmute">${voice.muted ? '🔇 案内オフ' : '🔈 案内'}</button><button class="tool undo" id="vlog">聞き取りの記録</button><button class="tool undo" id="vtest">読み上げテスト</button></div>
 `;
+  $('#vmute').onclick = () => { voice.muted = !voice.muted; if (voice.muted) { guideQ.length = 0; try { speechSynthesis.cancel(); } catch { /* なし */ } } renderVoice(); };
   $('#vlog').onclick = showVoiceLog;
   $('#vtest').onclick = showVoiceTest;
 }
@@ -1069,6 +1252,7 @@ function tokenizeSpeech(raw) {
     '(?<q>右上|左上|右下|左下)\\s*の?\\s*(?<qd>[1-8])', // 歯（右上7など）
     '(?<half>(?:右|左)(?![上下])\\s*[1-8])', // 上下が抜けた歯（右8など）
     '(?<quad>右上|左上|右下|左下)', // 番号のないブロック名（出血だけモードでは列の指定）
+    '(?<mode>出血モード|ポケットモード)', '(?<where>今どこ|いまどこ|現在地|どこ)',
     '(?<side>頬側|口蓋側|舌側)', '(?<pos>近心|遠心|中央)', '(?<all>全部)',
     '(?<plus>プラス|出血)', '(?<minus>マイナス)', '(?<pus>排膿)', '(?<num>\\d+!?)',
     '(?<undo>取り消し|取消し?|とりけし|取り消す)', '(?<prev>戻る|もどる)', '(?<next>進む|すすむ|次|つぎ|スキップ)', '(?<stop>停止|ストップ|終了)',
@@ -1081,6 +1265,8 @@ function tokenizeSpeech(raw) {
     if (g.q) toks.push({ type: 'tooth', t: QB[g.q] * 10 + Number(g.qd) });
     else if (g.half) toks.push({ type: 'badtooth' });
     else if (g.quad) toks.push({ type: 'quad', q: QB[g.quad] });
+    else if (g.mode) toks.push({ type: 'mode', mode: g.mode.startsWith('出血') ? 'bop' : 'ppd' });
+    else if (g.where) toks.push({ type: 'where' });
     else if (g.side) toks.push({ type: 'side', side: g.side === '頬側' ? 'b' : 'l' });
     else if (g.pos) toks.push({ type: 'pos', pos: { 近心: 'm', 遠心: 'd', 中央: 'c' }[g.pos] });
     else if (g.all) toks.push({ type: 'all' });
@@ -1125,6 +1311,7 @@ function handleBopSpeech(raw, provisional, dry) {
   const toks = tokenizeSpeech(raw);
   if (provisional && (!toks.length || toks.some((t) => ['undo', 'stop'].includes(t.type)))) return null;
   const T = ed.exam.teeth, ctx = voice.ctx;
+  const ctx0 = { ...ctx };
   const ops = [], done = [];
   let teeth = [], posSeen = false, last = [], sawNum = false;
   const set = (t, k, field, val) => {
@@ -1191,6 +1378,7 @@ function handleBopSpeech(raw, provisional, dry) {
     done.push('出血モードです。数字は歯の番号として聞いています（ポケットの深さは「🎤 ポケット」）');
   }
   if (dry) return { ops, done };
+  voice.lastGuide = bopGuide(ctx0, ctx, ops, done);
   if (ops.length) { voice.hist.push(ops); ed.undo = { kind: 'voice', ops }; ed.flash = '音声で入力しました'; }
   voice.lastResult = done.length ? done.join('、') : '入力できる言葉がありませんでした';
   setVoiceResult(raw, done, voice.lastResult);
@@ -1200,12 +1388,29 @@ function handleBopSpeech(raw, provisional, dry) {
 }
 
 function handleSpeech(raw, provisional = false, dry = false) {
+  voice.lastGuide = null;
+  if (!dry && view.name === 'editor' && ed.exam) {
+    // 「出血モード」「ポケットモード」「今どこ？」
+    const t0 = tokenizeSpeech(raw);
+    const mt = settings.guide.modeVoice && t0.find((t) => t.type === 'mode');
+    const wt = settings.guide.where && t0.find((t) => t.type === 'where');
+    if (mt || wt) {
+      if (provisional) return null;
+      if (mt && mt.mode !== voice.mode) setVoiceMode(mt.mode);
+      const msg = mt ? startText() : voice.mode === 'bop' ? `${ctxLabel(voice.ctx)}です` : `${siteSpeech(ed.seq[ed.cur])}です`;
+      voice.lastResult = msg;
+      voiceMsg(`<b>「${esc(raw.trim())}」</b> → ${esc(msg)}`);
+      voice.lastGuide = (mt ? guideOn('start') : guideOn('where')) ? [{ tone: mt ? 'chime' : null, text: msg }] : null;
+      return [];
+    }
+  }
   if (voice.mode === 'bop' && (dry || (view.name === 'editor' && ed.exam))) return handleBopSpeech(raw, provisional, dry);
   if (!dry && (view.name !== 'editor' || !ed.exam)) return null;
   const toks = tokenizeSpeech(raw);
   if (provisional && (!toks.length || toks.some((t) => ['undo', 'prev', 'next', 'stop'].includes(t.type)))) return null;
   if (!dry && ed.mode !== 'ppd') ed.mode = 'ppd';
   const T = ed.exam.teeth;
+  const cur0 = ed.cur, complete0 = dry ? false : ppdComplete();
   const ops = [], done = [];
   let target = null;
   let blocked = false; // 指定した歯が欠損などで見つからないときは、次の歯の指定まで数字を入れない
@@ -1284,6 +1489,7 @@ function handleSpeech(raw, provisional = false, dry = false) {
   moveToTarget();
   if (moved && !ops.length) done.push(`${siteName(cur().t, cur().k)} へ移動しました`);
   if (dry) return { ops, done };
+  voice.lastGuide = ppdGuide(cur0, ed.cur, ops, done, complete0, ppdComplete(), moved && !ops.length, moved);
 
   if (ops.length) {
     voice.hist.push(ops);
@@ -1297,6 +1503,26 @@ function handleSpeech(raw, provisional = false, dry = false) {
   renderVoice();
   return ops;
 }
+
+// ページめくり用のフットスイッチなど：→・↓・PageDown・スペースで聞き取りの開始／停止、←・↑・PageUpで直前の音声入力を取り消す
+document.addEventListener('keydown', (e) => {
+  if (!settings.guide.foot || view.name !== 'editor' || !ed.exam) return;
+  if (e.target.closest && e.target.closest('input, textarea, select')) return;
+  if ($('#dlg').open) return;
+  if (['ArrowRight', 'ArrowDown', 'PageDown', ' ', 'Enter'].includes(e.key)) {
+    e.preventDefault();
+    voiceToggle(voice.on ? voice.mode : ed.mode === 'bop' ? 'bop' : 'ppd');
+  } else if (['ArrowLeft', 'ArrowUp', 'PageUp'].includes(e.key)) {
+    e.preventDefault();
+    const last = voice.hist.pop();
+    if (!last) { voiceMsg('取り消せる入力がありません'); if (guideOn('fail')) guide([{ tone: 'buzz', text: '取り消せる入力がありません' }]); return; }
+    undoVoiceOps(last);
+    ed.flash = '音声の入力を取り消しました';
+    touch();
+    voiceMsg('直前の音声入力を取り消しました');
+    if (guideOn('echo')) guide([{ text: '取り消しました' }]);
+  }
+});
 
 /* ================= 音声入力の読み上げテスト ================= */
 // お題（正解）を出して読み上げてもらい、聞き取り結果と○×を記録する。患者の検査には書き込まない
@@ -1573,6 +1799,37 @@ function printTrend(p, liveAsc) {
   setTimeout(() => window.print(), 50);
 }
 
+/* ================= 設定：音声の案内 ================= */
+const GUIDE_ITEMS = [
+  ['知らせ', [['fail', '聞き取れなかったとき', '警告音＋「6番、部位をもう一度」'], ['area', 'エリアが変わったとき（出血）', 'チャイム＋「左上、頬側」'], ['start', '始めたとき・モードを替えたとき', 'チャイム＋「出血モード、右上頬側から」']]],
+  ['ポケットの道案内', [['boundary', '区切り', 'チャイム＋「右上頬側、終わり。次、左上頬側」'], ['tooth', '歯の番号', '次の歯に移ったら「5番」'], ['missing', '欠損歯を飛ばすとき', '「7番は欠損、6番へ」'], ['done', '全部位の入力完了', 'チャイム＋「全部位、入力しました」']]],
+  ['確認', [['echo', '入れた内容の復唱', '「3、3、4」「7番 遠心 近心」。そのぶん待ち時間が増えます'], ['okBeep', '正しく入ったときの小さな音', '入るたびに「ポッ」']]],
+];
+const OP_ITEMS = [['where', '「今どこ？」に答える', '「右上5、頬側、遠心です」'], ['modeVoice', '声でモード切り替え', '「出血モード」「ポケットモード」と言って切り替え'],
+  ['foot', 'フットスイッチ（キー操作）', 'Bluetoothのページめくり用スイッチなど。→・スペースで聞き取りの開始／停止、←で直前の音声入力を取り消し']];
+function guideSettingsHTML() {
+  const g = settings.guide;
+  const sw = ([k, l, d], dis) => `<label class="sw${dis ? ' dis' : ''}"><input type="checkbox" data-g="${k}" ${g[k] ? 'checked' : ''} ${dis ? 'disabled' : ''}><span><b>${l}</b><small>${d}</small></span></label>`;
+  return `<section class="card"><h2>音声の案内</h2>
+      <p class="sub">画面を見なくても入力できるように、声とチャイムで知らせます。案内のあいだ（1秒ほど）は聞き取りを止めるので、案内が終わってから話してください。入力画面の「🔈 案内」で、その場だけ止めることもできます。</p>
+      ${sw(['enabled', '音声の案内を使う', 'オフにすると、下の案内をすべて止めます'], false)}
+      ${GUIDE_ITEMS.map(([h, list]) => `<div class="swgroup"><div class="swh">${h}</div>${list.map((it) => sw(it, !g.enabled)).join('')}</div>`).join('')}
+      <div class="swgroup"><div class="swh">声の速さ</div><div class="row-tools">
+        ${[['normal', 'ふつう'], ['mid', '少し速い'], ['fast', '速い']].map(([v, l]) => `<label class="mini"><input type="radio" name="grate" value="${v}" ${g.rate === v ? 'checked' : ''}> ${l}</label>`).join('')}
+        <button class="btn" id="gtest">試しに聞く</button></div></div>
+    </section>
+    <section class="card"><h2>声・スイッチでの操作</h2>${OP_ITEMS.map((it) => sw(it, false)).join('')}</section>`;
+}
+function bindGuideSettings() {
+  document.querySelectorAll('[data-g]').forEach((c) => (c.onchange = async () => {
+    settings.guide[c.dataset.g] = c.checked;
+    await saveSettings();
+    if (c.dataset.g === 'enabled') showSettings();
+  }));
+  document.querySelectorAll('input[name=grate]').forEach((r) => (r.onchange = () => { settings.guide.rate = r.value; saveSettings(); }));
+  $('#gtest').onclick = () => { unlockAudio(); guide([{ tone: 'chime', text: '左上、頬側' }, { tone: 'buzz', text: '6番、部位をもう一度' }]); };
+}
+
 /* ================= 設定・バックアップ ================= */
 async function showSettings() {
   view = { name: 'settings' };
@@ -1590,6 +1847,7 @@ async function showSettings() {
         <div class="row-tools"><button class="btn primary" data-act="backup">バックアップを書き出す</button>
           <label class="btn">バックアップから読み込む<input type="file" id="imp" class="vh" accept="application/json,.json"></label></div>
         <p class="sub">保存領域の保護：${persisted === null ? '不明' : persisted ? '有効（ブラウザが自動で消さない設定）' : '未設定（ホーム画面に追加して使うと安定します）'}</p></section>
+      ${guideSettingsHTML()}
       <section class="card"><h2>音声入力の読み上げテスト</h2><p>お題を読み上げて、正しく聞き取れるかを確かめます。結果は記録され、書き出して送れます。</p><button class="btn" id="vtOpen">読み上げテストを開く</button></section>
       <section class="card"><h2>見本データ</h2><p>動作確認用に、架空の患者「見本 太郎」と3回分の検査を追加します。</p><button class="btn" id="demo">見本データを追加</button></section>
     </main>`;
@@ -1597,6 +1855,7 @@ async function showSettings() {
   document.querySelectorAll('input[name=order]').forEach((r) => (r.onchange = () => { settings.order = r.value; saveSettings(); }));
   $('#imp').onchange = (e) => { const f = e.target.files[0]; if (f) importBackup(f); e.target.value = ''; };
   $('#vtOpen').onclick = showVoiceTest;
+  bindGuideSettings();
   $('#demo').onclick = async () => {
     const { patient, exams } = makeDemo();
     await DB.put('patients', patient);
