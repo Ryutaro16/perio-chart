@@ -1028,6 +1028,7 @@ function undoProv() {
   if (p.ctx) voice.ctx = { ...p.ctx };
 }
 function voiceInterim(text) {
+  if (voice.discard) return; // フットスイッチで取り消した文の続き
   if (voice.prov && sameSpeech(voice.prov.text, text)) return;
   clearTimeout(voice.timer);
   voice.timer = setTimeout(() => {
@@ -1046,6 +1047,7 @@ function voiceInterim(text) {
 }
 function voiceFinal(text) {
   clearTimeout(voice.timer);
+  if (voice.discard) { voice.discard = false; voice.interim = ''; return; } // フットスイッチで取り消した文
   const startIdx = voice.prov ? voice.prov.cur : ed.cur; // 話し始めたときのカーソル
   if (voice.prov && sameSpeech(voice.prov.text, text) && !CMD_RE.test(text)) { const g = voice.prov.guide; voice.prov = null; voice.cue = null; addVoiceLog(text, startIdx); guide(g); return; } // 仮入力のまま確定
   if (!voice.prov) voice.cue = ed.cur;
@@ -1131,6 +1133,7 @@ function voiceStart() {
   // 無音が続くと止まることがあるので、聞き取り中は自動で再開する
   r.onend = () => {
     if (voice.prov && voice.rec === r) voiceFinal(voice.prov.text); // 確定が届かないまま止まったときは、仮入力をそのまま確定する
+    voice.discard = false;
     if (voice.paused) { if (voice.pauseDone) voice.pauseDone(); return; }
     if (voice.on && voice.rec === r) setTimeout(() => { if (voice.on && voice.rec === r && !voice.paused) try { r.start(); } catch { /* 再開済み */ } }, 250);
   };
@@ -1138,7 +1141,7 @@ function voiceStart() {
   voice.on = true;
   voice.lastSite = null;
   voice.endedSite = null;
-  voice.specTooth = null; voice.bopTooth = null; voice.bopLast = null;
+  voice.specTooth = null; voice.bopTooth = null; voice.bopLast = null; voice.discard = false;
   try { r.start(); } catch (err) { voice.on = false; voiceMsg('音声認識を開始できませんでした：' + esc(err.message)); return; }
   const want = voice.mode === 'bop' ? 'bop' : 'ppd';
   if (ed.mode !== want) { ed.mode = want; refresh(); }
@@ -1600,7 +1603,11 @@ function handleBopSpeech(raw, provisional, dry) {
       // 直前に付けた部位の出血を外す（マイナス）／出血の代わりに排膿にする（排膿）
       for (const { t, k } of last) {
         const i = ops.findIndex((o) => o.t === t && o.k === k && o.field === 'bop');
-        if (i >= 0) { T[t].bop[k] = ops[i].old; if (!ops[i].old) delete T[t].bop[k]; ops.splice(i, 1); }
+        if (i >= 0) {
+          T[t].bop[k] = ops[i].old; if (!ops[i].old) delete T[t].bop[k];
+          if (ops[i].oldCarry && ed.exam.carry) (ed.exam.carry.bop ||= {})[ck(t, k)] = true; // 引き継ぎの印も戻す
+          ops.splice(i, 1);
+        }
         else if (tk.field === 'pus') set(t, k, 'bop', false); // 前の文で付けた出血を、排膿に置きかえる
         if (tk.field === 'pus') set(t, k, 'pus', true);
         else set(t, k, 'bop', false);
@@ -1632,6 +1639,7 @@ function handleBopSpeech(raw, provisional, dry) {
 const CMD_RE = /出血モード|ポケットモード|今どこ|いまどこ|現在地|どこ/;
 function handleSpeech(raw, provisional = false, dry = false) {
   voice.lastGuide = null;
+  voice.jumped = false;
   if (!dry && view.name === 'editor' && ed.exam) {
     // 「出血モード」「ポケットモード」「今どこ？」
     const t0 = tokenizeSpeech(raw);
@@ -1809,6 +1817,17 @@ document.addEventListener('keydown', (e) => {
     voiceToggle(voice.on ? voice.mode : ed.mode === 'bop' ? 'bop' : 'ppd');
   } else if (['ArrowLeft', 'ArrowUp', 'PageUp'].includes(e.key)) {
     e.preventDefault();
+    if (voice.prov) { // 話している途中（仮入力）の分は、その文ごと取り消し、確定が届いても入れない
+      clearTimeout(voice.timer);
+      undoProv();
+      voice.discard = true;
+      cutRec();
+      ed.flash = '話している途中の入力を取り消しました';
+      touch();
+      voiceMsg('話している途中の入力を取り消しました');
+      if (guideOn('enabled')) guide([{ text: '取り消しました' }]);
+      return;
+    }
     const last = popVoiceUndo();
     if (!last) { voiceMsg('取り消せる入力がありません'); if (guideOn('fail')) guide([{ tone: 'buzz', text: '取り消せる入力がありません' }]); return; }
     ed.flash = '音声の入力を取り消しました';
