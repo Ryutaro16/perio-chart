@@ -7,14 +7,18 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="ペリオ">
 <meta name="theme-color" content="#0f766e">
+<!-- 安全のための設定：自分自身以外のサイトとは通信しない／検索エンジンに載せない -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
 <title>ペリオチャート</title>
-<link rel="stylesheet" href="app.css?v=20261012173622">
+<link rel="stylesheet" href="app.css?v=20261012174228">
 </head>
 <body>
 <div id="app"></div>
 <div id="print"></div>
 <div id="update" hidden></div>
 <dialog id="dlg"></dialog>
-<script src="app.js?v=20261012173622"></script>
+<script src="app.js?v=20261012174228"></script>
 </body>
 </html>
