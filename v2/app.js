@@ -364,7 +364,11 @@ async function showList() {
       return `<span class="kchip">${l} <b>${fmtPct(v)}</b>${d ? `<i class="${d > 0 ? 'bad' : 'good'}">${d > 0 ? '▲' : '▼'}${Math.abs(d)}</i>` : ''}</span>`;
     }).join('');
   }
-  patients.sort((a, b) => (a.kana || a.name).localeCompare(b.kana || b.name, 'ja'));
+  const byKana = (a, b) => (a.kana || a.name).localeCompare(b.kana || b.name, 'ja');
+  const sortPatients = () => patients.sort(settings.patientSort === 'recent'
+    ? (a, b) => ((info[b.id] || {}).last || '').localeCompare((info[a.id] || {}).last || '') || byKana(a, b)
+    : byKana);
+  sortPatients();
   app().innerHTML = `
     <header class="bar brandbar"><span class="logo" aria-hidden="true"></span><h1>ペリオチャート <span class="ver">v2</span></h1><div class="grow"></div><button class="btn ghost" data-go="settings">設定・バックアップ</button></header>
     <main class="wrap">
@@ -373,11 +377,13 @@ async function showList() {
         <label class="searchbox"><svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M15.5 15.5 21 21" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg><input id="q" class="search" type="search" placeholder="氏名・ふりがな・カルテ番号で検索" autocomplete="off"></label>
         <button class="btn primary big" id="addp">＋ 新規患者</button>
       </div>
+      ${patients.length > 1 ? `<div class="sortbar"><span class="sub">並べ方</span><div class="segtabs"><button class="seg${settings.patientSort === 'recent' ? '' : ' on'}" data-sort="kana">50音順</button><button class="seg${settings.patientSort === 'recent' ? ' on' : ''}" data-sort="recent">最近の検査順</button></div><span class="sub grow" id="pcount"></span></div>` : ''}
       <div class="card list" id="plist"></div>
     </main>`;
   const draw = () => {
     const q = $('#q').value.trim().toLowerCase();
     const rows = patients.filter((p) => !q || [p.name, p.kana, p.chartNo].some((v) => (v || '').toLowerCase().includes(q)));
+    if ($('#pcount')) $('#pcount').textContent = q ? `${rows.length}人 / 全${patients.length}人` : `全${patients.length}人`;
     $('#plist').innerHTML = rows.length
       ? rows.map((p) => {
         const i = info[p.id] || { n: 0, last: '' };
@@ -390,6 +396,10 @@ async function showList() {
   };
   draw();
   $('#q').addEventListener('input', draw);
+  document.querySelectorAll('[data-sort]').forEach((b) => (b.onclick = () => {
+    settings.patientSort = b.dataset.sort; saveSettings(); sortPatients(); draw();
+    document.querySelectorAll('[data-sort]').forEach((x) => x.classList.toggle('on', x === b));
+  }));
   $('#addp').onclick = () => patientDialog(null, (p) => showPatient(p.id));
   $('#plist').onclick = (e) => { const b = e.target.closest('[data-pid]'); if (b) showPatient(b.dataset.pid); };
 }

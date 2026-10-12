@@ -461,3 +461,6 @@ body.pr-portrait #print .chart i.dif { font-size: 6pt; }
 .vhelp .vhsounds b { margin-right: 6px; }
 .vhelp .vhsounds b.ok { color: #166534; } .vhelp .vhsounds b.ng { color: #92400e; }
 @media (max-width: 760px) { .vhelp .vhcols { grid-template-columns: 1fr; } .vhelp td.say { white-space: normal; } }
+
+.sortbar { display: flex; align-items: center; gap: 10px; margin: -2px 0 10px; }
+.sortbar .grow { text-align: right; }
