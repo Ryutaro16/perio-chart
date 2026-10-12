@@ -589,7 +589,7 @@ async function openEditor(examId) {
   voiceStop(true);
   for (const t of ALL) exam.teeth[t].fur ||= {};
   if (exam.pcrNone === undefined) { exam.pcrNone = !!exam.pcrDone && !hasPlaque(exam); delete exam.pcrDone; }
-  Object.assign(ed, { exam, patient, mode: 'ppd', seq: buildSeq(settings.order), flash: '', undo: null, bulkVal: 3, mobBulk: 0 });
+  Object.assign(ed, { exam, patient, mode: 'ppd', seq: buildSeq(settings.order), flash: '', undo: null, bulkVal: 3, mobBulk: 0, plRange: 'all', plFaces: new Set() });
   ed.cur = firstEmpty(ed.seq, (s) => s.t, (s) => exam.teeth[s.t].ppd[s.k] == null);
   ed.mob = firstEmpty(MOB_SEQ, (t) => t, (t) => exam.teeth[t].mob == null);
   ed.fur = firstEmpty(FURC_SEQ, (s) => s.t, (s) => exam.teeth[s.t].fur[s.f] == null);
@@ -638,7 +638,7 @@ async function finishCheck(ex) {
   if (mobLeft) gaps.push(['mob', `動揺度：<b>${mobLeft}歯</b>が未入力`]);
   if (!hasPlaque(ex) && !plaqueNone(ex)) gaps.push(['pcr', 'プラーク：未入力（付いていなければ「付着なし」）']);
   const carried = carriedCount(ex);
-  if (carried) gaps.push(['ppd', `前回から引き継いで<b>まだ確定していない値が${carried}か所</b>（薄い色の値）`]);
+  if (carried) gaps.push(['carry', `前回から引き継いで<b>まだ確定していない値が${carried}か所</b>（薄い色の値）`]);
   if (!ex.examiner) gaps.push(['by', '検査者が未入力']);
   if (!gaps.length) return true;
   return new Promise((resolve) => {
@@ -653,6 +653,16 @@ async function finishCheck(ex) {
       d.onclose = null; closeDialog(); resolve(false);
       const m = b.dataset.gap;
       if (m === 'by') { $('#exby').focus(); return; }
+      if (m === 'carry') { // 引き継いだまま確定していない値：ポケットにあればその部位へ、なければその値のある入力へ
+        const i = ed.seq.findIndex((st) => !T[st.t].missing && isCarried(ex, 'ppd', st.t, st.k));
+        if (i >= 0) { ed.mode = 'ppd'; ed.cur = i; } else {
+          const ty = CARRY_TYPES.find((x) => carriedCount(ex, [x]));
+          ed.mode = { bop: 'bop', pus: 'ppd', mob: 'mob', fur: 'fur', pl: 'pcr' }[ty] || 'ppd';
+        }
+        ed.flash = '薄い色の値が、前回から引き継いでまだ確定していない値です';
+        refresh();
+        return;
+      }
       ed.mode = m;
       if (m === 'ppd') { const i = ed.seq.findIndex((st) => !T[st.t].missing && T[st.t].ppd[st.k] == null); if (i >= 0) ed.cur = i; }
       refresh();
@@ -831,6 +841,7 @@ function undoBulk(u) {
   if (u.kind === 'mob') for (const t of u.filled) T[t].mob = null;
   if (u.kind === 'bopclear') { for (const [t, b] of u.before) T[t].bop = b; ed.flash = '出血の記録を元に戻しました'; return; }
   if (u.kind === 'voice') { undoVoiceOps(u.ops); if (voice.hist[voice.hist.length - 1] === u.ops) voice.hist.pop(); ed.flash = '音声の入力を取り消しました'; return; }
+  if (u.kind === 'miss') { T[u.t].missing = false; ed.flash = `${toothName(u.t)}の欠損を取り消しました`; return; }
   if (u.kind === 'unmiss') { markMissing(u.t); ed.flash = `${toothName(u.t)}を欠損に戻しました`; return; }
   if (u.kind === 'pl') {
     for (const [t, pl] of u.before) T[t].pl = pl;
@@ -874,7 +885,7 @@ function onPadTap(e) {
       delete th.ppd[c.k]; delete th.bop[c.k]; delete th.pus[c.k];
       for (const ty of ['ppd', 'bop', 'pus']) unCarry(ed.exam, ty, c.t, c.k);
     }
-    else if (act === 'missing') markMissing(c.t);
+    else if (act === 'missing') { markMissing(c.t); ed.flash = `${toothName(c.t)}を欠損にしました`; ed.undo = { kind: 'miss', t: c.t }; }
     else if (act === 'fill') { fillEmptyPPD(); ed.cur = firstEmpty(ed.seq, (s) => s.t, (s) => T[s.t].ppd[s.k] == null); }
     else return;
     return touch();
@@ -898,7 +909,7 @@ function onPadTap(e) {
     else if (act === 'prev') { ed.mob = stepMob(-1); return refresh(); }
     else if (act === 'next') { ed.mob = stepMob(1); return refresh(); }
     else if (act === 'clear') { T[t].mob = null; unCarry(ed.exam, 'mob', t); }
-    else if (act === 'missing') markMissing(t);
+    else if (act === 'missing') { markMissing(t); ed.flash = `${toothName(t)}を欠損にしました`; ed.undo = { kind: 'miss', t }; }
     else if (act === 'bulkdown' || act === 'bulkup') { ed.mobBulk = Math.min(3, Math.max(0, ed.mobBulk + (act === 'bulkup' ? 1 : -1))); return refresh(); }
     else if (act === 'fill') { fillEmptyMob(); ed.mob = firstEmpty(MOB_SEQ, (x) => x, (x) => T[x].mob == null); }
     else return;
@@ -1852,6 +1863,7 @@ function judgeTest(item, r) {
 async function showVoiceTest() {
   vt.from = view.name === 'editor' ? { ...view } : null;
   voiceStop(true);
+  if (vt.from) await flushSave(); // 入力画面の保存待ちを先に書き込む（戻ったときに古い記録で上書きしないように）
   view = { name: 'voicetest' };
   const saved = await DB.get('settings', 'voicetest');
   vt.log = (saved && saved.items) || [];
