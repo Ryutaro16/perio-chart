@@ -910,7 +910,8 @@ const KD = { '〇': 0, '零': 0, '一': 1, '二': 2, '三': 3, '四': 4, '五': 
 const SPEECH_FIX = [
   [/みぎうえ|右へ|右え|みぎえ/g, '右上'], [/ひだりうえ|左へ|左え|ひだりえ/g, '左上'], [/みぎした/g, '右下'], [/ひだりした/g, '左下'],
   // 部位の言葉の聞き間違い。「聞き取りの記録」で見つかったものを元に、音の組み合わせで読み替える
-  [/頰側|ほお側|ほおがわ|頬がわ|きょうそく|[教協共強胸京凶狭恐鏡境競秒驚][側則速測即息足束底]/g, '頬側'],
+  [/(右上|左上|右下|左下)?\s*([1-8])?\s*([5五後高口公校甲工交好向広])?\s*倍速/g, (m, q, d, pre) => (q ? `${q}${d || ''} 口蓋側` : `${pre && d ? d : ''} 口蓋側`)],
+  [/頰側|ほお側|ほおがわ|頬がわ|きょうそく|[教協共強胸京凶狭恐鏡境競秒驚予][側則速測即息足束底]/g, '頬側'],
   [/こうがい(?:側|そく|がわ)|口蓋がわ|[口公甲高校構郊工交広向好号後][外害蓋府布付凱街](?:側|そく|即|則|速|測|足|束|息)?/g, '口蓋側'],
   [/ぜっそく|ぜつそく|舌がわ|したがわ|[舌絶][側速息則測足束底]/g, '舌側'],
   [/きんしん|[禁近金謹筋均菌][親心震振身新信森慎止進]/g, '近心'], [/[遠延円炎園援演塩]後/g, '遠心 5'], [/えんしん|[遠延円炎園援演塩][心伸信陣進身親新震振]/g, '遠心'], [/真ん中|まんなか|ちゅうおう|[中注宙柱忠][王央応]|(側)王/g, (m, sd) => (sd ? sd + '中央' : '中央')],
@@ -946,18 +947,20 @@ function tokenizeSpeech(raw) {
   s = s.replace(/十([一二])?/g, (m, d) => ` ${10 + (d ? KD[d] : 0)}! `); // 「十」「十一」「十二」は2桁の数
   s = s.replace(/[〇零一二三四五六七八九]/g, (c) => KD[c]);
   s = s.replace(/[百千]/g, '');
-  const re = /(右上|左上|右下|左下)\s*の?\s*([1-8])|(頬側|口蓋側|舌側)|(近心|遠心|中央)|(プラス|出血)|(マイナス)|(排膿)|(\d+!?)|(取り消し|取消し?|とりけし|取り消す)|(戻る|もどる)|(進む|すすむ|次|つぎ|スキップ)|(停止|ストップ|終了)/g;
+  const re = /(右上|左上|右下|左下)\s*の?\s*([1-8])|(?:右|左)(?![上下])\s*(?=[1-8])(\d)|(頬側|口蓋側|舌側)|(近心|遠心|中央)|(プラス|出血)|(マイナス)|(排膿)|(\d+!?)|(取り消し|取消し?|とりけし|取り消す)|(戻る|もどる)|(進む|すすむ|次|つぎ|スキップ)|(停止|ストップ|終了)/g;
   const toks = [];
   let m;
   while ((m = re.exec(s))) {
+    // 番号は正規表現の（）の順：1-2 歯／3 上下が抜けた歯／4 側／5 部位／6 プラス／7 マイナス／8 排膿／9 数字／10-13 指示
     if (m[1]) toks.push({ type: 'tooth', t: { 右上: 10, 左上: 20, 左下: 30, 右下: 40 }[m[1]] + Number(m[2]) });
-    else if (m[3]) toks.push({ type: 'side', side: m[3] === '頬側' ? 'b' : 'l' });
-    else if (m[4]) toks.push({ type: 'pos', pos: { 近心: 'm', 遠心: 'd', 中央: 'c' }[m[4]] });
-    else if (m[5]) toks.push({ type: 'flag', field: 'bop', val: true, label: '出血＋' });
-    else if (m[6]) toks.push({ type: 'flag', field: 'bop', val: false, label: '出血なし' });
-    else if (m[7]) toks.push({ type: 'flag', field: 'pus', val: true, label: '排膿' });
-    else if (m[8]) {
-      const d = m[8];
+    else if (m[3]) toks.push({ type: 'badtooth' });
+    else if (m[4]) toks.push({ type: 'side', side: m[4] === '頬側' ? 'b' : 'l' });
+    else if (m[5]) toks.push({ type: 'pos', pos: { 近心: 'm', 遠心: 'd', 中央: 'c' }[m[5]] });
+    else if (m[6]) toks.push({ type: 'flag', field: 'bop', val: true, label: '出血＋' });
+    else if (m[7]) toks.push({ type: 'flag', field: 'bop', val: false, label: '出血なし' });
+    else if (m[8]) toks.push({ type: 'flag', field: 'pus', val: true, label: '排膿' });
+    else if (m[9]) {
+      const d = m[9];
       const vals = [];
       if (d.endsWith('!')) vals.push(Number(d.slice(0, -1)));
       else for (let i = 0; i < d.length; i++) {
@@ -965,10 +968,10 @@ function tokenizeSpeech(raw) {
         if (d[i] === '1' && d[i + 1] === '0') { vals.push(10); i++; } else if (d[i] !== '0') vals.push(Number(d[i]));
       }
       if (vals.length) toks.push({ type: 'num', vals });
-    } else if (m[9]) toks.push({ type: 'undo' });
-    else if (m[10]) toks.push({ type: 'prev' });
-    else if (m[11]) toks.push({ type: 'next' });
-    else if (m[12]) toks.push({ type: 'stop' });
+    } else if (m[10]) toks.push({ type: 'undo' });
+    else if (m[11]) toks.push({ type: 'prev' });
+    else if (m[12]) toks.push({ type: 'next' });
+    else if (m[13]) toks.push({ type: 'stop' });
   }
   return toks;
 }
@@ -996,6 +999,7 @@ function handleSpeech(raw, provisional = false, dry = false) {
   const ops = [], done = [];
   let target = null;
   let blocked = false; // 指定した歯が欠損などで見つからないときは、次の歯の指定まで数字を入れない
+  const lastNum = toks.map((t) => t.type).lastIndexOf('num');
   let moved = false;
   const cur = () => ed.seq[ed.cur];
   const setField = (site, field, val) => {
@@ -1025,10 +1029,17 @@ function handleSpeech(raw, provisional = false, dry = false) {
   };
 
   for (const tk of toks) {
-    if (tk.type === 'tooth') { moveToTarget(); blocked = false; target = { t: tk.t, side: null, pos: null }; }
-    else if (tk.type === 'side') { target ||= { t: cur().t, side: null, pos: null }; target.side = tk.side; }
-    else if (tk.type === 'pos') { target ||= { t: cur().t, side: cur().k[0], pos: null }; target.pos = tk.pos; }
+    if (tk.type === 'tooth') { moveToTarget(); blocked = false; target = { t: tk.t, side: null, pos: null, named: true }; }
+    else if (tk.type === 'badtooth') { target = null; blocked = true; done.push('歯の名前が聞き取れませんでした（上か下か）。入力していません'); }
+    else if (tk.type === 'side') { if (blocked) continue; target ||= { t: cur().t, side: null, pos: null }; target.side = tk.side; target.named = true; }
+    else if (tk.type === 'pos') { if (blocked) continue; target ||= { t: cur().t, side: cur().k[0], pos: null }; target.pos = tk.pos; }
     else if (tk.type === 'num') {
+      // 「右下4 頬側 8」のように、部位（近心・遠心・中央）が抜けて数字が1つだけのときは、聞き落としの可能性が高いので入れない
+      if (target && !target.pos && target.named && tk.vals.length === 1 && toks.indexOf(tk) === lastNum) {
+        target = null; blocked = true;
+        done.push('近心・遠心・中央が聞き取れませんでした。入力していません');
+        continue;
+      }
       moveToTarget();
       if (blocked) continue;
       for (const n of tk.vals) {
