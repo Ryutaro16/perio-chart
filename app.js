@@ -995,13 +995,13 @@ function renderVoice() {
 // 聞き取った文字を、入力の指示（トークン）に分ける
 const KD = { '〇': 0, '零': 0, '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9 };
 const SPEECH_FIX = [
-  [/みぎうえ|右へ|右え|みぎえ|右手/g, '右上'], [/ひだりうえ|左へ|左え|ひだりえ|左手/g, '左上'], [/依頼し?た/g, '左下'], [/みぎした/g, '右下'], [/ひだりした/g, '左下'],
+  [/みぎうえ|右へ|右え|みぎえ|右手/g, '右上'], [/ひだりうえ|左へ|左え|ひだりえ|左手|ひな上|ひなうえ/g, '左上'], [/依頼し?た/g, '左下'], [/みぎした/g, '右下'], [/ひだりした|ひな下|ひなした/g, '左下'],
   // 部位の言葉の聞き間違い。「聞き取りの記録」で見つかったものを元に、音の組み合わせで読み替える
   [/(右上|左上|右下|左下)?\s*([1-8])?\s*([5五後高口公校甲工交好向広])?\s*倍速/g, (m, q, d, pre) => (q ? `${q}${d || ''} 口蓋側` : `${pre && d ? d : ''} 口蓋側`)],
   [/頰側|ほお側|ほおがわ|頬がわ|きょうそく|[教協共強胸京凶狭恐鏡境競秒驚予][側則速測即息足束底]/g, '頬側'],
   [/こうがい(?:側|そく|がわ)|口蓋がわ|[口公甲高校構郊工交広向好号後][外害蓋府布付凱街](?:側|そく|即|則|速|測|足|束|息)?/g, '口蓋側'],
   [/ぜっそく|ぜつそく|舌がわ|したがわ|[舌絶接][側速息則測足束底触]/g, '舌側'],
-  [/きんしん|PC|ピーシー|[禁近金謹筋均菌][親心震振身新信森慎止進鍼]/g, '近心'], [/[遠延円炎園援演塩]後/g, '遠心 5'], [/えんしん|[遠延円炎園援演塩]\s*[CＣシ](?![a-zA-Z])|[遠延円炎園援演塩][心伸信陣進身親新震振鍼]/g, '遠心'], [/真ん中|まんなか|ちゅうおう|[中注宙柱忠][王央応]|(側)王/g, (m, sd) => (sd ? sd + '中央' : '中央')],
+  [/きんしん|PC|ピーシー|[禁近金謹筋均菌][親心震振身新信森慎止進鍼]/g, '近心'], [/[遠延円炎園援演塩]後/g, '遠心 5'], [/えんしん|[遠延円炎園援演塩]\s*[CＣシ](?![a-zA-Z])|[遠延円炎園援演塩返変][心伸信陣進身親新震振鍼]/g, '遠心'], [/真ん中|まんなか|ちゅうおう|[中注宙柱忠][王央応]|(側)王/g, (m, sd) => (sd ? sd + '中央' : '中央')],
   [/ぷらす|\+|クラス|グラス|ブラス/g, 'プラス'], [/ぜんぶ|全部|前部/g, '全部'], [/まいなす/g, 'マイナス'], [/はいのう|排のう/g, '排膿'],
 ];
 // 数字の読み。読みだけでできている部分（ひらがな・カタカナ・同じ音の漢字の並び）に限って数字に直す
@@ -1095,7 +1095,7 @@ function handleBopSpeech(raw, provisional, dry) {
   if (provisional && (!toks.length || toks.some((t) => ['undo', 'stop'].includes(t.type)))) return null;
   const T = ed.exam.teeth, ctx = voice.ctx;
   const ops = [], done = [];
-  let teeth = [], posSeen = false, last = [];
+  let teeth = [], posSeen = false, last = [], sawNum = false;
   const set = (t, k, field, val) => {
     ops.push({ t, k, field, old: T[t][field][k], oldCarry: isCarried(ed.exam, field, t, k) });
     T[t][field][k] = val;
@@ -1109,10 +1109,15 @@ function handleBopSpeech(raw, provisional, dry) {
     posSeen = true;
     done.push(`${teeth.map(toothName).join('・')} ${ctx.side === 'b' ? '頬' : teeth[0] < 30 ? '口蓋' : '舌'}${poss.map((p) => POS[p]).join('・')} 出血`);
   };
+  // 前の歯に部位が1つも付かないまま次の歯が来たら、部位の聞き落としとして知らせる
+  const dropPending = () => {
+    if (teeth.length && !posSeen) done.push(`${teeth.map(toothName).join('・')}の部位が聞き取れませんでした。入力していません`);
+    teeth = []; posSeen = false;
+  };
   const addTooth = (t) => {
-    if (posSeen) { teeth = []; posSeen = false; }
+    dropPending();
     if (T[t].missing) { done.push(`${toothName(t)}は欠損です`); return; }
-    teeth.push(t);
+    teeth = [t];
   };
   const undoLast = () => {
     if (ops.length) voice.hist.push(ops.splice(0));
@@ -1122,15 +1127,16 @@ function handleBopSpeech(raw, provisional, dry) {
     done.push('直前の音声入力を取り消しました');
   };
   for (const tk of toks) {
-    if (tk.type === 'quad') { ctx.q = tk.q; teeth = []; posSeen = false; done.push(`${ctxLabel(ctx)} へ`); }
+    if (tk.type === 'quad') { dropPending(); ctx.q = tk.q; done.push(`${ctxLabel(ctx)} へ`); }
     else if (tk.type === 'side') {
-      ctx.side = tk.side; teeth = []; posSeen = false;
+      dropPending(); ctx.side = tk.side;
       if (done.length && done[done.length - 1].endsWith(' へ')) done.pop();
       done.push(`${ctxLabel(ctx)} へ`);
     } else if (tk.type === 'tooth') { ctx.q = Math.floor(tk.t / 10); addTooth(tk.t); }
     else if (tk.type === 'num') {
+      sawNum = true;
       for (const d of tk.vals) {
-        if (d < 1 || d > 8) { done.push(`${d}番の歯はありません`); continue; }
+        if (d < 1 || d > 8) { dropPending(); done.push(`${d}番の歯はありません`); continue; }
         addTooth(ctx.q * 10 + d);
       }
     } else if (tk.type === 'pos') apply([tk.pos]);
@@ -1147,6 +1153,11 @@ function handleBopSpeech(raw, provisional, dry) {
     } else if (tk.type === 'badtooth') { teeth = []; posSeen = false; done.push('歯の名前が聞き取れませんでした。入力していません'); }
     else if (tk.type === 'undo') undoLast();
     else if (tk.type === 'stop') { if (!dry) voiceStop(); }
+  }
+  dropPending();
+  if (sawNum && !ops.length && !toks.some((t) => ['pos', 'all', 'quad', 'side', 'undo'].includes(t.type))) {
+    done.length = 0;
+    done.push('出血モードです。数字は歯の番号として聞いています（ポケットの深さは「🎤 ポケット」）');
   }
   if (dry) return { ops, done };
   if (ops.length) { voice.hist.push(ops); ed.undo = { kind: 'voice', ops }; ed.flash = '音声で入力しました'; }
