@@ -977,6 +977,7 @@ function voiceInterim(text) {
     const ops = handleSpeech(text, true);
     if (ops) voice.prov = { text, ops, ...before, guide: voice.lastGuide };
     // 読めない言葉で止まったときも、ここで文を確定させる。続けて言い直すと同じ文の後ろにつながり、何度言っても同じ所で止まるため
+    if (voice.mode === 'bop' && voice.specCut && ops && ops.length && guideOn('tooth')) playTone('pop'); // 出血：歯が入った合図
     if (ppdCue() === 'area' || voice.junkCut || voice.specCut) cutRec();
   }, VOICE_EARLY_MS);
 }
@@ -1040,6 +1041,7 @@ function voiceToggle(mode = 'ppd') {
 }
 function setVoiceMode(mode) {
   voice.mode = mode;
+  voice.bopTooth = null; voice.bopLast = null;
   undoProv();
   if (mode === 'bop') { const c = ed.seq[ed.cur]; voice.ctx = { q: quad(c.t), side: c.k[0] }; }
   if (voice.on || mode === 'bop') { ed.mode = mode; refresh(); }
@@ -1073,7 +1075,7 @@ function voiceStart() {
   voice.on = true;
   voice.lastSite = null;
   voice.endedSite = null;
-  voice.specTooth = null;
+  voice.specTooth = null; voice.bopTooth = null; voice.bopLast = null;
   try { r.start(); } catch (err) { voice.on = false; voiceMsg('音声認識を開始できませんでした：' + esc(err.message)); return; }
   const want = voice.mode === 'bop' ? 'bop' : 'ppd';
   if (ed.mode !== want) { ed.mode = want; refresh(); }
@@ -1432,17 +1434,22 @@ function handleBopSpeech(raw, provisional, dry) {
   const T = ed.exam.teeth, ctx = voice.ctx;
   const ctx0 = { ...ctx };
   const ops = [], done = [];
-  let teeth = [], posSeen = false, last = [], sawNum = false;
+  let teeth = [], posSeen = false, last = [], sawNum = false, sawTooth = false;
   const set = (t, k, field, val) => {
     ops.push({ t, k, field, old: T[t][field][k], oldCarry: isCarried(ed.exam, field, t, k) });
     T[t][field][k] = val;
     unCarry(ed.exam, field, t, k);
   };
   const apply = (poss) => {
+    // 文の頭が部位の言葉なら、直前の文で付けた歯の続き（「7 遠心」で確定したあとの「近心」）
+    if (!teeth.length && !sawTooth && voice.bopTooth && Math.floor(voice.bopTooth / 10) === ctx.q) teeth = [voice.bopTooth];
     if (!teeth.length) { done.push('歯の番号が聞き取れませんでした。入力していません'); return; }
+    voice.bopTooth = teeth[teeth.length - 1];
     const hit = [];
     for (const t of teeth) for (const pos of poss) { set(t, ctx.side + pos, 'bop', true); hit.push({ t, k: ctx.side + pos }); }
-    last = hit;
+    // 同じ歯に続けて付けた部位（「7 遠心 近心」）は、まとめて「直前の分」にする
+    last = posSeen && last.length && teeth.length === 1 && last.every((x) => x.t === teeth[0]) ? [...last, ...hit] : hit;
+    voice.bopLast = last; // 文を確定したあとの「マイナス」「排膿」にも使う
     posSeen = true;
     done.push(`${teeth.map(toothName).join('・')} ${ctx.side === 'b' ? '頬' : teeth[0] < 30 ? '口蓋' : '舌'}${poss.map((p) => POS[p]).join('・')} 出血`);
   };
@@ -1453,6 +1460,7 @@ function handleBopSpeech(raw, provisional, dry) {
   };
   const addTooth = (t) => {
     dropPending();
+    sawTooth = true;
     if (T[t].missing) { done.push(`${toothName(t)}は欠損です`); return; }
     teeth = [t];
   };
@@ -1464,9 +1472,9 @@ function handleBopSpeech(raw, provisional, dry) {
     done.push('直前の音声入力を取り消しました');
   };
   for (const tk of toks) {
-    if (tk.type === 'quad') { dropPending(); ctx.q = tk.q; done.push(`${ctxLabel(ctx)} へ`); }
+    if (tk.type === 'quad') { dropPending(); ctx.q = tk.q; voice.bopTooth = null; done.push(`${ctxLabel(ctx)} へ`); }
     else if (tk.type === 'side') {
-      dropPending(); ctx.side = tk.side;
+      dropPending(); ctx.side = tk.side; voice.bopTooth = null;
       if (done.length && done[done.length - 1].endsWith(' へ')) done.pop();
       done.push(`${ctxLabel(ctx)} へ`);
     } else if (tk.type === 'tooth') { ctx.q = Math.floor(tk.t / 10); addTooth(tk.t); }
@@ -1478,11 +1486,13 @@ function handleBopSpeech(raw, provisional, dry) {
       }
     } else if (tk.type === 'pos') apply([tk.pos]);
     else if (tk.type === 'all') apply(['d', 'c', 'm']);
-    else if (tk.type === 'flag' && last.length && (tk.val === false || tk.field === 'pus')) {
+    else if (tk.type === 'flag' && (last.length || (voice.bopLast && voice.bopLast.length)) && (tk.val === false || tk.field === 'pus')) {
+      if (!last.length) last = voice.bopLast;
       // 直前に付けた部位の出血を外す（マイナス）／出血の代わりに排膿にする（排膿）
       for (const { t, k } of last) {
         const i = ops.findIndex((o) => o.t === t && o.k === k && o.field === 'bop');
         if (i >= 0) { T[t].bop[k] = ops[i].old; if (!ops[i].old) delete T[t].bop[k]; ops.splice(i, 1); }
+        else if (tk.field === 'pus') set(t, k, 'bop', false); // 前の文で付けた出血を、排膿に置きかえる
         if (tk.field === 'pus') set(t, k, 'pus', true);
         else set(t, k, 'bop', false);
       }
@@ -1492,6 +1502,9 @@ function handleBopSpeech(raw, provisional, dry) {
     else if (tk.type === 'stop') { if (!dry) voiceStop(); }
   }
   dropPending();
+  // 歯と部位を言い終えたら（最後の言葉が部位・全部・マイナスなど）、またはエリアを変えたら、その場で文を確定させる（ポケットの部位指定と同じ）
+  const lt = toks[toks.length - 1];
+  if (provisional && !dry && ((ops.length && lt && ['pos', 'all', 'flag'].includes(lt.type)) || ctx.q !== ctx0.q || ctx.side !== ctx0.side)) voice.specCut = true;
   if (sawNum && !ops.length && !toks.some((t) => ['pos', 'all', 'quad', 'side', 'undo'].includes(t.type))) {
     done.length = 0;
     done.push('出血モードです。数字は歯の番号として聞いています（ポケットの深さは「🎤 ポケット」）');
@@ -1719,12 +1732,12 @@ function makeTestItem() {
 // 入力画面と同じ読み取り方で、空の練習チャートに試し入力する
 function dryRunSpeech(raw, startIdx) {
   const exam = newExam(null, today(), '', null);
-  const save = { exam: ed.exam, seq: ed.seq, cur: ed.cur, lastSite: voice.lastSite, endedSite: voice.endedSite, hist: voice.hist, spec: voice.specTooth };
+  const save = { exam: ed.exam, seq: ed.seq, cur: ed.cur, lastSite: voice.lastSite, endedSite: voice.endedSite, hist: voice.hist, spec: voice.specTooth, bopT: voice.bopTooth, bopL: voice.bopLast };
   ed.exam = exam; ed.seq = buildSeq(settings.order); ed.cur = startIdx;
-  voice.lastSite = null; voice.endedSite = null; voice.hist = []; voice.specTooth = null;
+  voice.lastSite = null; voice.endedSite = null; voice.hist = []; voice.specTooth = null; voice.bopTooth = null; voice.bopLast = null;
   try { return { ...handleSpeech(raw, false, true), exam }; } finally {
     ed.exam = save.exam; ed.seq = save.seq; ed.cur = save.cur;
-    voice.lastSite = save.lastSite; voice.endedSite = save.endedSite; voice.hist = save.hist; voice.specTooth = save.spec;
+    voice.lastSite = save.lastSite; voice.endedSite = save.endedSite; voice.hist = save.hist; voice.specTooth = save.spec; voice.bopTooth = save.bopT; voice.bopLast = save.bopL;
   }
 }
 function judgeTest(item, r) {
