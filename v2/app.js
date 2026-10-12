@@ -1000,6 +1000,7 @@ function onChartTap(e) {
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 const voice = { mode: 'ppd', ctx: null, rec: null, on: false, lastSite: null, endedSite: null, hist: [], interim: '', msg: '', prov: null, timer: null, log: [], cue: null };
 const VOICE_EARLY_MS = 250; // 話している途中でも、この時間言葉が止まったら仮に入力する
+const VOICE_EARLY_BOP_MS = 150; // 出血モードは歯の番号と部位だけなので、もっと早く印を付ける
 
 // ---- 速さの工夫：確定を待たずに仮入力し、確定した文が違えば入れ直す ----
 const sameSpeech = (a, b) => { const n = (t) => t.replace(/[\s、。,.!?！？]/g, ''); return n(a) === n(b); };
@@ -1094,7 +1095,7 @@ function voiceInterim(text) {
     if (voice.mode === 'bop') bopCue(ops); // 出血：歯が入ったらポッ、エリアが変わったらチャイム
     const area = ppdCue() === 'area';
     if (area || voice.junkCut || voice.specCut) cutRec(area ? 'エリアの区切り' : voice.junkCut ? '聞き取れない言葉' : '部位指定');
-  }, VOICE_EARLY_MS);
+  }, voice.mode === 'bop' ? VOICE_EARLY_BOP_MS : VOICE_EARLY_MS);
 }
 function voiceFinal(text) {
   clearTimeout(voice.timer); voice.timer = null;
@@ -1542,7 +1543,7 @@ function showVoiceHelp() {
       <span><b>チャイム</b>エリアの区切り。<u>声の案内が終わってから</u>続きを話す</span>
       <span><b>ブー</b>入らなかった。案内のとおり言い直す</span>
       <span><b class="ok">● どうぞ</b>聞いています</span><span><b class="ng">🔈 待って</b>案内中（話しても入りません）</span></div>
-    <p class="sub">部位を指定して入れたときは、1か所ごとに文を区切って確定します。区切りのあとは、帯が「どうぞ」になってから話してください。</p>
+    <p class="sub">続けて話してかまいません。黙ったとき（初期1秒）・エリアの区切り・部位を指定して入れたときに、そこまでを確定します。声の案内（「次、左上頬側」など）が流れている間は「待って」になるので、終わってから話してください。音（ポッ・チャイム）の間は話し続けて大丈夫です。</p>
     <div class="dlg-actions"><div class="grow"></div><button class="btn primary" data-close>閉じる</button></div></div>`, true);
 }
 
@@ -2254,8 +2255,8 @@ function printTrend(p, liveAsc) {
 
 /* ================= 設定：音声の案内 ================= */
 const GUIDE_ITEMS = [
-  ['知らせ', [['fail', '聞き取れなかったとき', '警告音＋「6番、部位をもう一度」'], ['area', 'エリアが変わったとき（出血）', 'チャイム＋「左上、頬側」'], ['start', '始めたとき・モードを替えたとき', 'チャイム＋「出血モード、右上頬側から」']]],
-  ['ポケットの道案内', [['boundary', '区切り', 'エリアの最後まで入ったらチャイム。聞き取りを一度止めて確定し、「次、左上頬側、1番」と言ってから再開'], ['tooth', '歯の番号', '話している最中は次の歯に移るたびに「ポッ」、話し終えたら「5番」'], ['missing', '欠損歯を飛ばすとき', '「7番は欠損、6番へ」'], ['done', '全部位の入力完了', 'チャイム＋「全部位、入力しました」']]],
+  ['知らせ', [['fail', '聞き取れなかったとき', '警告音＋「6番、部位をもう一度」'], ['area', 'エリアが変わったとき（出血）', 'チャイム（声なし。聞き取りは止めない）'], ['start', '始めたとき・モードを替えたとき', 'チャイム＋「出血モード、右上頬側から」']]],
+  ['ポケットの道案内', [['boundary', '区切り', 'エリアの最後まで入ったらチャイム＋確定し、「次、左上頬側。1番」'], ['tooth', '歯の番号', '話している最中は次の歯に移るたびに「ポッ」、話し終えたら「5番」'], ['missing', '欠損歯を飛ばすとき', '「7番は欠損、6番へ」'], ['done', '全部位の入力完了', 'チャイム＋「全部位、入力しました」']]],
   ['確認', [['echo', '入れた内容の復唱', '「3、3、4」「7番 遠心 近心」（ポケットは数字が6個以下のとき）。そのぶん待ち時間が増えます'], ['okBeep', '正しく入ったときの小さな音', '入るたびに「ポッ」']]],
 ];
 const OP_ITEMS = [['where', '「今どこ？」に答える', '「右上5、頬側、遠心です」'], ['modeVoice', '声でモード切り替え', '「出血モード」「ポケットモード」と言って切り替え'],
@@ -2264,7 +2265,7 @@ function guideSettingsHTML() {
   const g = settings.guide;
   const sw = ([k, l, d], dis) => `<label class="sw${dis ? ' dis' : ''}"><input type="checkbox" data-g="${k}" ${g[k] ? 'checked' : ''} ${dis ? 'disabled' : ''}><span><b>${l}</b><small>${d}</small></span></label>`;
   return `<section class="card"><h2>音声の案内</h2>
-      <p class="sub">画面を見なくても入力できるように、声とチャイムで知らせます。話している最中は音（「ポッ」）だけで知らせ、聞き取りは止めません。エリアの区切り（チャイム）と、話し終えたあとの言葉の案内のあいだ（1〜3秒）は聞き取りを止めるので、案内が終わってから話してください。入力画面の「🔈 案内」で、その場だけ止めることもできます。</p>
+      <p class="sub">画面を見なくても入力できるように、声とチャイムで知らせます。音（ポッ・チャイム）の間は聞き取りを止めないので、話し続けて大丈夫です。言葉の案内（「次、左上頬側」など）の間（1〜3秒）だけ聞き取りを止めるので、案内が終わってから話してください。入力画面の「🔈 案内」で、その場だけ止めることもできます。</p>
       ${sw(['enabled', '音声の案内を使う', 'オフにすると、下の案内をすべて止めます'], false)}
       ${GUIDE_ITEMS.map(([h, list]) => `<div class="swgroup"><div class="swh">${h}</div>${list.map((it) => sw(it, !g.enabled)).join('')}</div>`).join('')}
       <div class="swgroup"><div class="swh">声の速さ</div><div class="row-tools">
