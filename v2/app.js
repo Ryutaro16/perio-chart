@@ -999,16 +999,39 @@ function onChartTap(e) {
 // Safari／Chrome の音声認識を使う。ホーム画面に追加したアプリでは使えない（Safari のタブで開く）
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 const voice = { mode: 'ppd', ctx: null, rec: null, on: false, lastSite: null, endedSite: null, hist: [], interim: '', msg: '', prov: null, timer: null, log: [], cue: null };
-const VOICE_EARLY_MS = 350; // 話している途中でも、この時間言葉が止まったら仮に入力する
+const VOICE_EARLY_MS = 250; // 話している途中でも、この時間言葉が止まったら仮に入力する
 
 // ---- 速さの工夫：確定を待たずに仮入力し、確定した文が違えば入れ直す ----
 const sameSpeech = (a, b) => { const n = (t) => t.replace(/[\s、。,.!?！？]/g, ''); return n(a) === n(b); };
 // 認識結果の束を処理する。途中結果は複数に分かれて届くことがあるので、つなげて1つの文として扱う
+// 比べるための正規化：空白・句読点を除き、漢数字を数字にそろえる
+const normSpeech = (t) => t.normalize('NFKC').replace(/[\s、。,.!?！？]/g, '').replace(/[〇零一二三四五六七八九]/g, (c) => KD[c]);
+// 区切って確定した部分（voice.consumed）を、届いた文の頭から取り除く。iPadは同じ文に言葉を足していくため。
+// 頭が一致しない（前の部分を書き換えた）ときは null
+function stripConsumed(text) {
+  const c = voice.consumed;
+  if (!c) return text;
+  const n = normSpeech(text);
+  if (!n.startsWith(c)) return null;
+  let k = 0, i = 0;
+  while (i < text.length && k < c.length) { k += normSpeech(text[i]).length; i++; }
+  return text.slice(i);
+}
 function onVoiceResults(items) {
   let interim = '', fin = false;
   for (const it of items) {
-    if (it.isFinal) { voiceFinal(it.text); fin = true; }
-    else interim += it.text;
+    if (it.isFinal) {
+      let t = stripConsumed(it.text);
+      if (t == null) t = rollbackSession(it.text);
+      voice.consumed = ''; voice.session = null; // 確定した文は閉じる。次の文は新しく始まる
+      if (t != null && t.trim()) voiceFinal(t);
+      fin = true;
+    } else interim += it.text;
+  }
+  if (interim) {
+    let t = stripConsumed(interim);
+    if (t == null) t = rollbackSession(interim);
+    interim = t == null ? '' : t;
   }
   voice.interim = interim;
   if (interim.trim()) { diag().ev++; voiceInterim(interim); }
@@ -1068,7 +1091,7 @@ function voiceInterim(text) {
       d.why = !tk.length ? '数字や言葉が読めない' : CMD_RE.test(text) ? '今どこ等' : tk.some((t) => ['undo', 'prev', 'next', 'stop'].includes(t.type)) ? '操作の言葉（次・戻る・取り消し等）' : 'その他';
     }
     // 読めない言葉で止まったときも、ここで文を確定させる。続けて言い直すと同じ文の後ろにつながり、何度言っても同じ所で止まるため
-    if (voice.mode === 'bop' && voice.specCut && ops && ops.length && guideOn('tooth')) playTone('pop'); // 出血：歯が入った合図
+    if (voice.mode === 'bop') bopCue(ops); // 出血：歯が入ったらポッ、エリアが変わったらチャイム
     const area = ppdCue() === 'area';
     if (area || voice.junkCut || voice.specCut) cutRec(area ? 'エリアの区切り' : voice.junkCut ? '聞き取れない言葉' : '部位指定');
   }, VOICE_EARLY_MS);
@@ -1079,14 +1102,16 @@ function voiceFinal(text) {
   const startIdx = voice.prov ? voice.prov.cur : ed.cur; // 話し始めたときのカーソル
   if (voice.prov && sameSpeech(voice.prov.text, text) && !CMD_RE.test(text)) { // 仮入力のまま確定
     const g = voice.prov.guide, quiet = /秒の間/.test(voice.cutReason || '');
-    voice.prov = null; voice.cue = null; addVoiceLog(text, startIdx); guide(quiet ? quietGuide(g) : g); return;
+    voice.prov = null; voice.cue = null; voice.bopPopN = 0; addVoiceLog(text, startIdx); guide(quiet ? quietGuide(g) : g); return;
   }
   if (!voice.prov) voice.cue = ed.cur;
   undoProv(); // 仮入力と違う文で確定したら、仮入力を戻してから入れ直す
-  handleSpeech(text);
+  voice.lastOps = handleSpeech(text);
   ppdCue();
   voice.cue = null;
   const quiet = /秒の間/.test(voice.cutReason || '');
+  if (voice.mode === 'bop') bopCue(voice.lastOps);
+  voice.bopPopN = 0;
   addVoiceLog(text, startIdx);
   guide(quiet ? quietGuide(voice.lastGuide) : voice.lastGuide);
 }
@@ -1142,6 +1167,7 @@ function voiceToggle(mode = 'ppd') {
 }
 function setVoiceMode(mode) {
   voice.mode = mode;
+  voice.ctxCue = null; voice.bopPopN = 0;
   voice.bopTooth = null; voice.bopLast = null;
   undoProv();
   if (mode === 'bop') voice.ctx = { q: 1, side: 'b' }; // 出血モードは、いつも右上 頬側から始める（2026-10-13 龍太郎の指定）
@@ -1175,8 +1201,9 @@ function voiceStart() {
     }
     voice.interim = '';
     voice.discard = false;
+    voice.consumed = ''; voice.heard = ''; voice.session = null;
     if (voice.paused) { if (voice.pauseDone) voice.pauseDone(); return; }
-    if (voice.on && voice.rec === r) setTimeout(() => { if (voice.on && voice.rec === r && !voice.paused) try { r.start(); } catch { /* 再開済み */ } }, 250);
+    if (voice.on && voice.rec === r) setTimeout(() => { if (voice.on && voice.rec === r && !voice.paused) try { r.start(); } catch { /* 再開済み */ } }, 60);
   };
   voice.rec = r;
   voice.on = true;
@@ -1278,6 +1305,13 @@ function guide(items) {
 }
 async function runGuide() {
   guiding = true;
+  // 音（ポッ・チャイム・ブー）だけなら、聞き取りは止めずに鳴らす。言葉を読み上げるときだけ止める
+  if (guideQ.every((g) => !g.text)) {
+    while (guideQ.length) { const g = guideQ.shift(); if (g.tone) await playTone(g.tone); }
+    guiding = false;
+    if (guideQ.length) runGuide();
+    return;
+  }
   await pauseRec();
   while (guideQ.length) {
     const g = guideQ.shift();
@@ -1343,11 +1377,51 @@ function ppdCue() {
 }
 // エリアの最後まで入ったら、聞き取りを一度止めて確定させる（iPadは止めると、そこまでの言葉を確定して届ける）。
 // 1回の発話を短くして、聞き直しによる書き換えや反応の遅れを防ぐ。確定のあとの案内（「次、左上頬側」）が終わると再開する
+// 区切る：聞き取りは止めずに、ここまでの言葉を確定し、続きは新しい文として扱う（止めて再開すると0.3〜1秒言葉が抜けるため）
 function cutRec(reason = '') {
-  const r = voice.rec;
-  if (!r || !voice.on || voice.paused) return;
+  if (!voice.rec || !voice.on || voice.paused || voice.discard) return;
   if (reason) voice.cutReason = reason;
-  try { r.stop(); } catch { /* 停止済み */ }
+  const text = (voice.interim || '').trim() ? voice.interim : voice.prov ? voice.prov.text : '';
+  if (!text) return;
+  const base = voice.consumed || '';
+  // 1つの文の中で最初に区切るとき、その前の状態を覚えておく（iPadが前の部分を書き換えたら、まとめて戻して入れ直すため）
+  if (!base) {
+    const p = voice.prov, at = p && p.ops ? voice.hist.indexOf(p.ops) : -1; // 仮入力が入る前の状態から
+    const src = p || { cur: ed.cur, lastSite: voice.lastSite, endedSite: voice.endedSite, ctx: voice.ctx, specTooth: voice.specTooth, bopTooth: voice.bopTooth, bopLast: voice.bopLast };
+    voice.session = { hist0: at >= 0 ? at : voice.hist.length, cur: src.cur, lastSite: src.lastSite, endedSite: src.endedSite, ctx: src.ctx ? { ...src.ctx } : null,
+      specTooth: src.specTooth, bopTooth: src.bopTooth, bopLast: src.bopLast };
+  }
+  voiceFinal(text);
+  voice.consumed = base + normSpeech(text);
+  voice.interim = '';
+  voice.heard = '';
+}
+// 区切ったあとに、iPadが前の部分を書き換えた（「右上5」→「右上6」など）：この文の中で確定した分をすべて戻し、
+// 書き換えたあとの文全体で入れ直す。戻せる記録がなければ、捨てて言い直してもらう
+function rollbackSession(full) {
+  const S = voice.session;
+  clearTimeout(voice.timer); voice.timer = null;
+  undoProv();
+  if (!S) { mismatchCut(); return null; }
+  while (voice.hist.length > S.hist0) undoVoiceOps(voice.hist.pop());
+  ed.cur = S.cur; voice.lastSite = S.lastSite; voice.endedSite = S.endedSite;
+  if (S.ctx) voice.ctx = { ...S.ctx };
+  voice.specTooth = S.specTooth; voice.bopTooth = S.bopTooth; voice.bopLast = S.bopLast;
+  voice.consumed = ''; voice.session = null;
+  if (voice.log[0]) voice.log[0].info = `${voice.log[0].info || ''}・iPadが書き換えたので入れ直し`;
+  touch();
+  return full;
+}
+function mismatchCut() {
+  voice.consumed = '';
+  clearTimeout(voice.timer); voice.timer = null;
+  undoProv();
+  voice.discard = true;
+  const r = voice.rec;
+  if (r) try { r.stop(); } catch { /* 停止済み */ }
+  voiceMsg('聞き取りが乱れました。直前の言葉をもう一度言ってください');
+  voice.warn = '聞き取りが乱れました。もう一度';
+  if (guideOn('fail')) guide([{ tone: 'buzz', text: 'もう一度' }]);
 }
 const ECHO_MAX = 6; // 復唱するのは、入れた数が多くないときだけ（長い読み上げのあいだは聞き取れないため）
 // ポケットの音声入力のあとの案内：警告／小さな音／復唱／今の位置（区切り・歯の番号・欠損歯・完了）
@@ -1384,10 +1458,19 @@ function ppdGuide(cur0, cur1, ops, done, complete0, complete1, moved, jumped) {
   return finish();
 }
 // 出血だけの音声入力のあとの案内：警告／エリアの変更／小さな音／復唱
+// 出血モードの合図（話している最中も、確定したときも）：新しい歯に付いたらポッ、エリアが変わったらチャイム。音だけなので聞き取りは止めない
+function bopCue(ops) {
+  if (!voice.ctx) return;
+  const key = `${voice.ctx.q}${voice.ctx.side}`;
+  if (voice.ctxCue && voice.ctxCue !== key && guideOn('area')) playTone('chime');
+  voice.ctxCue = key;
+  const n = ops ? new Set(ops.filter((o) => o.field === 'bop' && ed.exam.teeth[o.t].bop[o.k]).map((o) => o.t)).size : 0;
+  if (n > (voice.bopPopN || 0) && guideOn('tooth')) playTone('pop');
+  voice.bopPopN = Math.max(n, voice.bopPopN || 0);
+}
 function bopGuide(ctx0, ctx1, ops, done) {
   const T = ed.exam.teeth, items = [];
   const fails = [...new Set(done.map(failSpeech).filter(Boolean))];
-  if ((ctx0.q !== ctx1.q || ctx0.side !== ctx1.side) && guideOn('area')) items.push({ tone: 'chime', text: ctxLabel(ctx1).replace(' ', '、') });
   if (ops.length && guideOn('okBeep')) items.push({ tone: 'pop' });
   if (ops.length && guideOn('echo')) {
     const byTooth = [];
@@ -1671,7 +1754,7 @@ function handleBopSpeech(raw, provisional, dry) {
   dropPending();
   // 歯と部位を言い終えたら（最後の言葉が部位・全部・マイナスなど）、またはエリアを変えたら、その場で文を確定させる（ポケットの部位指定と同じ）
   const lt = toks[toks.length - 1];
-  if (provisional && !dry && ((ops.length && lt && ['pos', 'all', 'flag'].includes(lt.type)) || ctx.q !== ctx0.q || ctx.side !== ctx0.side)) voice.specCut = true;
+  // 出血モードは続けて話せるように、歯ごとやエリアでは区切らない（黙ったときだけ区切る）
   if (sawNum && !ops.length && !toks.some((t) => ['pos', 'all', 'quad', 'side', 'undo'].includes(t.type))) {
     done.length = 0;
     done.push('出血モードです。数字は歯の番号として聞いています（ポケットの深さは「🎤 ポケット」）');
