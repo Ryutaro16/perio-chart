@@ -77,6 +77,29 @@ h2 { font-size: 17px; margin: 0 0 10px; }
 .pname small { display: block; font-size: 13px; color: var(--sub); font-weight: 400; }
 .pmeta { color: var(--sub); font-size: 14px; }
 .chev { color: var(--line-strong); font-size: 22px; }
+/* v2：一覧の見た目 */
+.brandbar { gap: 10px; }
+.brandbar .logo { width: 30px; height: 30px; border-radius: 9px; flex: none;
+  background: linear-gradient(140deg, #14b8a6, var(--accent)); position: relative; box-shadow: 0 2px 6px rgba(15, 118, 110, .35); }
+.brandbar .logo::after { content: ""; position: absolute; inset: 7px 8px 6px; background: #fff; border-radius: 6px 6px 9px 9px;
+  clip-path: polygon(0 0, 100% 0, 100% 55%, 78% 100%, 62% 100%, 50% 62%, 38% 100%, 22% 100%, 0 55%); }
+.ver { font-size: 12px; font-weight: 800; color: var(--accent); background: var(--accent-soft); border-radius: 6px; padding: 2px 6px; vertical-align: 3px; }
+.searchbox { flex: 1; min-width: 220px; position: relative; display: flex; }
+.searchbox svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--sub); pointer-events: none; }
+.searchbox .search { padding-left: 38px; min-height: 50px; border-radius: 12px; }
+.avatar { width: 40px; height: 40px; border-radius: 50%; flex: none; display: grid; place-items: center;
+  background: var(--accent-soft); color: var(--accent); font-weight: 800; font-size: 17px; }
+.prow { min-height: 68px; }
+.prow:hover { background: #f8fafb; }
+.pkeys { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.kchip { font-size: 13px; color: var(--sub); background: #f3f5f7; border: 1px solid var(--line-soft); border-radius: 999px; padding: 3px 10px; white-space: nowrap; }
+.kchip b { color: var(--ink); font-variant-numeric: tabular-nums; }
+.kchip i { font-style: normal; font-weight: 800; margin-left: 4px; font-size: 12px; }
+.kchip i.bad { color: #c2410c; }
+.kchip i.good { color: #2563eb; }
+.pmeta { text-align: right; min-width: 104px; font-variant-numeric: tabular-nums; color: var(--ink); }
+.pmeta small { display: block; color: var(--sub); font-size: 12px; }
+@media (max-width: 640px) { .pkeys { display: none; } }
 
 /* ---------- 患者詳細 ---------- */
 .pinfo .pn { font-size: 22px; font-weight: 700; }
@@ -85,6 +108,14 @@ h2 { font-size: 17px; margin: 0 0 10px; }
 .pinfo dl { display: flex; gap: 28px; flex-wrap: wrap; margin: 10px 0 0; }
 .pinfo dt { font-size: 12px; color: var(--sub); }
 .pinfo dd { margin: 0; font-size: 15px; }
+.kpis { display: flex; gap: 10px; flex-wrap: wrap; align-items: stretch; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
+.kpicap { font-weight: 700; font-size: 14px; align-self: center; margin-right: 6px; }
+.kpicap small { display: block; font-weight: 400; font-size: 12px; color: var(--sub); }
+.kpi { flex: 1; min-width: 130px; background: #f7f9fa; border: 1px solid var(--line-soft); border-radius: 12px; padding: 8px 12px; display: grid; grid-template-columns: 1fr auto; align-items: baseline; }
+.kpi span { grid-column: 1 / -1; font-size: 12px; color: var(--sub); }
+.kpi b { font-size: 24px; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.kpi i { font-style: normal; font-weight: 800; font-size: 14px; }
+.kpi i.good { color: #2563eb; } .kpi i.bad { color: #c2410c; } .kpi i.same { color: var(--sub); }
 .tablewrap { padding: 0; overflow-x: auto; }
 .xt { width: 100%; border-collapse: collapse; font-size: 15px; }
 .xt th { font-size: 12px; color: var(--sub); font-weight: 600; text-align: right; padding: 10px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
@@ -150,6 +181,19 @@ dialog::backdrop { background: rgba(15, 23, 42, .35); }
 .area { min-height: 31px; border: 1px solid var(--line); background: #f8fafc; border-radius: 8px; font-size: 15px; color: var(--sub); }
 .area.on { background: #dc2626; border-color: #dc2626; color: #fff; font-size: 19px; font-weight: 800; box-shadow: 0 0 0 3px #fecaca; }
 .voicebar .vlogbtn { margin-left: auto; flex: none; }
+/* 音声入力中：話してよいか・次に入る場所 */
+.voicebar .vstate { flex: none; display: inline-flex; align-items: center; gap: 7px; font-weight: 800; font-size: 16px; padding: 4px 14px 4px 12px; border-radius: 999px; }
+.voicebar .vstate.live { background: #dcfce7; color: #166534; }
+.voicebar .vstate.live i { width: 10px; height: 10px; border-radius: 50%; background: #16a34a; animation: vblink 1.2s infinite; }
+.voicebar .vstate.wait { background: #fef3c7; color: #92400e; max-width: 34%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.voicebar .vstate small { font-size: 12px; font-weight: 700; background: #92400e; color: #fff; border-radius: 6px; padding: 1px 6px; }
+.voicebar .vwhere { flex: none; display: inline-flex; align-items: baseline; gap: 6px; font-size: 20px; font-weight: 800; color: var(--cur); }
+.voicebar .vwhere small { font-size: 12px; color: var(--sub); font-weight: 700; }
+.voicebar .vwhere b { font-size: 17px; }
+.voicebar .vm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 音声入力中は、チャートの今の場所を目立たせる */
+.chart.voiceon td.cur, .voiceon .chart td.cur { background: #dbeafe; box-shadow: inset 0 0 0 3px var(--cur); animation: curpulse 1.6s ease-in-out infinite; }
+@keyframes curpulse { 50% { box-shadow: inset 0 0 0 3px var(--cur), 0 0 0 3px rgba(37, 99, 235, .35); } }
 .vlog { max-height: 55vh; overflow: auto; border: 1px solid var(--line); border-radius: 10px; }
 .vlog table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .vlog th { text-align: left; font-size: 12px; color: var(--sub); padding: 6px 8px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: #fff; }

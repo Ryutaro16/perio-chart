@@ -348,17 +348,29 @@ async function showList() {
   const info = {};
   for (const e of exams) {
     if (e.deletedAt) continue;
-    const i = (info[e.patientId] ||= { n: 0, last: '' });
+    const i = (info[e.patientId] ||= { n: 0, last: '', list: [] });
     i.n++;
+    i.list.push(e);
     if (e.date > i.last) i.last = e.date;
+  }
+  // 最新の検査の要点（BOP・4mm以上）と、前回からの変化
+  const KEY = [['boppct', 'BOP'], ['ge4pct', '4mm以上']];
+  for (const i of Object.values(info)) {
+    i.list.sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt);
+    const [s0, s1] = i.list.slice(0, 2).map(calcStats);
+    i.keys = KEY.map(([k, l]) => {
+      const v = s0[k], pv = s1 ? s1[k] : null;
+      const d = v == null || pv == null ? 0 : Math.round(v) - Math.round(pv);
+      return `<span class="kchip">${l} <b>${fmtPct(v)}</b>${d ? `<i class="${d > 0 ? 'bad' : 'good'}">${d > 0 ? '▲' : '▼'}${Math.abs(d)}</i>` : ''}</span>`;
+    }).join('');
   }
   patients.sort((a, b) => (a.kana || a.name).localeCompare(b.kana || b.name, 'ja'));
   app().innerHTML = `
-    <header class="bar"><h1>ペリオチャート</h1><div class="grow"></div><button class="btn ghost" data-go="settings">設定・バックアップ</button></header>
+    <header class="bar brandbar"><span class="logo" aria-hidden="true"></span><h1>ペリオチャート <span class="ver">v2</span></h1><div class="grow"></div><button class="btn ghost" data-go="settings">設定・バックアップ</button></header>
     <main class="wrap">
       ${backupBanner(patients.length)}
       <div class="row-tools">
-        <input id="q" class="search" type="search" placeholder="氏名・ふりがな・カルテ番号で検索" autocomplete="off">
+        <label class="searchbox"><svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M15.5 15.5 21 21" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg><input id="q" class="search" type="search" placeholder="氏名・ふりがな・カルテ番号で検索" autocomplete="off"></label>
         <button class="btn primary big" id="addp">＋ 新規患者</button>
       </div>
       <div class="card list" id="plist"></div>
@@ -369,9 +381,10 @@ async function showList() {
     $('#plist').innerHTML = rows.length
       ? rows.map((p) => {
         const i = info[p.id] || { n: 0, last: '' };
-        return `<button class="prow" data-pid="${p.id}"><span class="cno">${esc(p.chartNo || '—')}</span>
-          <span class="pname">${esc(p.name)}<small>${esc(p.kana || '')}</small></span>
-          <span class="pmeta">${i.n ? `最終検査 ${fmtDate(i.last)}・${i.n}回` : '検査なし'}</span><span class="chev">›</span></button>`;
+        return `<button class="prow" data-pid="${p.id}"><span class="avatar" aria-hidden="true">${esc((p.name || '？').trim().charAt(0))}</span>
+          <span class="pname">${esc(p.name)}<small>${p.chartNo ? `No.${esc(p.chartNo)}　` : ''}${esc(p.kana || '')}</small></span>
+          ${i.n ? `<span class="pkeys">${i.keys}</span>` : ''}
+          <span class="pmeta">${i.n ? `${fmtDate(i.last)}<small>検査 全${i.n}回</small>` : '<small>検査なし</small>'}</span><span class="chev">›</span></button>`;
       }).join('')
       : `<p class="empty">${patients.length ? '該当する患者がいません' : 'まだ患者が登録されていません。「＋ 新規患者」から登録してください。'}</p>`;
   };
@@ -426,6 +439,23 @@ function historyCardHTML(e, prev) {
     </div>
   </section>`;
 }
+// 患者画面の上の要点：最新の検査の4つの数値と、前回からの変化（改善＝青▼、悪化＝橙▲）
+function kpiHTML(live) {
+  if (!live.length) return '';
+  const [s0, s1] = live.slice(0, 2).map(calcStats);
+  const tiles = ['boppct', 'ge4pct', 'pcr', 'mean'].map((k) => {
+    const m = TRENDS.find((x) => x.key === k);
+    const v = s0[k], pv = s1 ? s1[k] : null;
+    let d = '';
+    if (v != null && pv != null) {
+      const diff = m.pct ? Math.round(v) - Math.round(pv) : Math.round((v - pv) * 10) / 10;
+      if (diff) { const good = diff < 0; d = `<i class="${good ? 'good' : 'bad'}">${diff < 0 ? '▼' : '▲'}${m.pct ? Math.abs(diff) : Math.abs(diff).toFixed(1)}</i>`; }
+      else d = '<i class="same">＝</i>';
+    }
+    return `<div class="kpi"><span>${m.label}</span><b>${fmtTrend(m, v)}</b>${d}</div>`;
+  }).join('');
+  return `<div class="kpis"><div class="kpicap">最新 ${fmtDate(live[0].date)}${live[1] ? `<small>前回 ${fmtDate(live[1].date)} と比べて</small>` : ''}</div>${tiles}</div>`;
+}
 async function showPatient(pid, showDeleted = false) {
   const p = await DB.get('patients', pid);
   if (!p) return showList();
@@ -447,7 +477,7 @@ async function showPatient(pid, showDeleted = false) {
       <div class="card pinfo"><div class="pn">${esc(p.name)} <small>様</small></div><div class="pk">${esc(p.kana || '')}</div>
         <dl><div><dt>カルテ番号</dt><dd>${esc(p.chartNo || '—')}</dd></div>
         <div><dt>生年月日</dt><dd>${p.birth ? `${fmtDate(p.birth)}（${ageAt(p.birth)}歳）` : '—'}</dd></div>
-        ${p.note ? `<div><dt>メモ</dt><dd>${esc(p.note)}</dd></div>` : ''}</dl></div>
+        ${p.note ? `<div><dt>メモ</dt><dd>${esc(p.note)}</dd></div>` : ''}</dl>${kpiHTML(live)}</div>
       <div class="row-tools"><h2>${showDeleted ? '削除した検査' : '検査の記録（新しい順）'}</h2><div class="grow"></div>
         ${showDeleted ? '<button class="btn" id="tglDel">‹ 検査の記録に戻る</button>' : '<button class="btn primary big" id="newx">＋ 新しい検査を始める</button>'}</div>
       <div class="card tablewrap">${rows
@@ -602,6 +632,7 @@ function refresh() {
   $('#stats').innerHTML = statsHTML(calcStats(ed.exam)) + diffNote;
   $('#pad').innerHTML = padHTML();
   ed.flash = '';
+  if (voice.on) renderVoice(); // 帯の「次」の場所を合わせる
 }
 
 function touch(redraw = true) {
@@ -1146,6 +1177,7 @@ async function runGuide() {
   voice.speaking = '';
   guiding = false;
   resumeRec();
+  renderVoice();
 }
 function pauseRec() {
   return new Promise((res) => {
@@ -1267,9 +1299,18 @@ function renderVoice() {
   const v = $('#voicebar');
   if (!v) return;
   v.hidden = !voice.on && !voice.msg && !voice.warn;
+  const ch = $('#chart');
+  if (ch) ch.classList.toggle('voiceon', voice.on && voice.mode !== 'bop');
   v.classList.toggle('warn', !!voice.warn);
-  v.innerHTML = `<div class="vrow">${voice.on ? '<span class="vdot"></span>' : ''}${voice.on && voice.mode === 'bop' && voice.ctx ? `<span class="vctx">出血入力中：${ctxLabel(voice.ctx)}</span>` : ''}${voice.warn ? `<span class="vwarn">⚠ ${esc(voice.warn)}</span>` : ''}<span class="vm">${voice.msg}</span>${voice.interim ? `<span class="vi">${esc(voice.interim)}…</span>` : ''}
-    ${voice.speaking ? `<span class="vpause">🔈 ${esc(voice.speaking)}</span>` : ''}
+  // 話してよいか（聞いている／案内中）と、次に入る場所を大きく出す。画面をちらっと見ただけで分かるように
+  const waiting = voice.on && (guiding || voice.paused);
+  const state = !voice.on ? '' : waiting
+    ? `<span class="vstate wait">🔈 ${voice.speaking ? `「${esc(voice.speaking)}」` : '案内中'}<small>待って</small></span>`
+    : '<span class="vstate live"><i></i>どうぞ</span>';
+  const c = ed.seq && ed.seq[ed.cur];
+  const where = voice.on && voice.mode !== 'bop' && c && ed.exam
+    ? `<span class="vwhere"><small>次</small>${voice.endedSite ? '全部位 入力済み' : `${toothName(c.t)}<b>${sideName(c.t, c.k[0])} ${POS[c.k[1]]}</b>`}</span>` : '';
+  v.innerHTML = `<div class="vrow">${state}${where}${voice.on && voice.mode === 'bop' && voice.ctx ? `<span class="vctx">出血入力中：${ctxLabel(voice.ctx)}</span>` : ''}${voice.warn ? `<span class="vwarn">⚠ ${esc(voice.warn)}</span>` : ''}<span class="vm">${voice.msg}</span>${voice.interim ? `<span class="vi">${esc(voice.interim)}…</span>` : ''}
     <button class="tool undo vlogbtn" id="vmute">${voice.muted ? '🔇 案内オフ' : '🔈 案内'}</button><button class="tool undo" id="vlog">聞き取りの記録</button><button class="tool undo" id="vtest">読み上げテスト</button></div>
 `;
   $('#vmute').onclick = () => { voice.muted = !voice.muted; if (voice.muted) { guideQ.length = 0; try { speechSynthesis.cancel(); } catch { /* なし */ } } renderVoice(); };
