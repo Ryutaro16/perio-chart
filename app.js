@@ -973,7 +973,7 @@ function showVoiceLog() {
   openDialog(`<div class="dlg-body"><h2>聞き取りの記録（新しい順）</h2>
     <p class="hint">間違っていた行は「×」を押して、「正しくは」に本当に言った内容を書いてください。「記録を書き出す」で私に送れます。</p>
     <div class="vlog">${rows ? `<table><thead><tr><th>時刻</th><th>開始位置</th><th>聞き取った言葉</th><th>入力した内容</th><th>判定</th><th>正しくは</th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="empty">まだ記録がありません</p>'}</div>
-    <div class="dlg-actions"><button class="btn" id="vlogTest">読み上げテスト</button><div class="grow"></div><button class="btn" id="vlogExport">記録を書き出す</button><button class="btn primary" data-close>閉じる</button></div></div>`, true);
+    <div class="dlg-actions"><button class="btn" id="vlogTest">読み上げテスト</button><div class="grow"></div><button class="btn" id="vlogClear" ${voice.log.length ? '' : 'disabled'}>記録を消す</button><button class="btn" id="vlogExport">記録を書き出す</button><button class="btn primary" data-close>閉じる</button></div></div>`, true);
   const d = $('#dlg');
   d.querySelectorAll('[data-ok]').forEach((b) => (b.onclick = () => {
     const l = voice.log.find((x) => x.id === b.dataset.ok);
@@ -986,6 +986,11 @@ function showVoiceLog() {
   $('#vlogExport').onclick = () => exportCSV(`voice-log-${stamp()}.csv`, '聞き取りの記録',
     ['時刻', '開始位置', '聞き取った言葉', '入力した内容', '判定', '正しくは'],
     voice.log.map((l) => [l.time, l.start, l.raw, l.result, l.ok === true ? '○' : l.ok === false ? '×' : '', l.correct]));
+  $('#vlogClear').onclick = async () => {
+    const ok = await askConfirm(`聞き取りの記録（${voice.log.length}件）をすべて消しますか？\n必要なら、先に「記録を書き出す」で保存してください。`, '消す', true);
+    if (ok) { voice.log = []; await saveVoiceLog(); }
+    showVoiceLog();
+  };
   $('#vlogTest').onclick = () => { closeDialog(); showVoiceTest(); };
 }
 
