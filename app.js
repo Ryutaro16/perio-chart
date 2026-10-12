@@ -1220,7 +1220,13 @@ function ppdGuide(cur0, cur1, ops, done, complete0, complete1, moved, jumped) {
   const p = ed.seq[cur1 - 1];
   const at = `${b.t % 10}番${p && p.t === b.t && p.k[0] === b.k[0] ? ` ${POS[b.k[1]]}` : ''}`;
   if (areaName(a) !== areaName(b)) {
-    if (guideOn('boundary')) items.push({ text: `次、${areaName(b)}、${at}` });
+    const gone = []; // 新しいエリアの先頭で飛ばした欠損歯
+    for (let j = cur1 - 1; j > cur0 && T[ed.seq[j].t].missing && areaName(ed.seq[j]) === areaName(b); j--) {
+      const t = ed.seq[j].t;
+      if (t % 10 !== 8 && !gone.includes(t)) gone.unshift(t);
+    }
+    const goneText = gone.length && guideOn('missing') ? `${gone.map((t) => `${t % 10}番`).join('・')}は欠損、` : '';
+    if (guideOn('boundary')) items.push({ text: `次、${areaName(b)}。${goneText}${at}${goneText ? 'から' : ''}` });
     else if (guideOn('tooth')) items.push({ text: at });
   } else if (a.t !== b.t) {
     const skipped = []; // 今の歯のすぐ手前で飛ばした欠損歯
@@ -1311,10 +1317,12 @@ function tokenizeSpeech(raw) {
   s = s.replace(/十([一二])?/g, (m, d) => ` ${10 + (d ? KD[d] : 0)}! `); // 「十」「十一」「十二」は2桁の数
   s = s.replace(/[〇零一二三四五六七八九]/g, (c) => KD[c]);
   s = s.replace(/[百千]/g, '');
+  s = s.replace(/([1-8])\s*([番晩盤])/g, ' $1$2 '); // 「335番」でも「5番」を前の数字と分ける
   const re = new RegExp([
     '(?<q>右上|左上|右下|左下)\\s*の?\\s*(?<qd>[1-8])', // 歯（右上7など）
     '(?<half>(?:右|左)(?![上下])\\s*[1-8])', // 上下が抜けた歯（右8など）
     '(?<quad>右上|左上|右下|左下)', // 番号のないブロック名（出血だけモードでは列の指定）
+    '(?<ban>[1-8])\\s*[番晩盤]', // 「5番」＝今のエリアの5番（出血モードでは歯の番号の数字と同じ）
     '(?<mode>出血モード|ポケットモード)', '(?<where>今どこ|いまどこ|現在地|どこ)',
     '(?<side>頬側|口蓋側|舌側)', '(?<pos>近心|遠心|中央)', '(?<all>全部)',
     '(?<plus>プラス|出血)', '(?<minus>マイナス)', '(?<pus>排膿)', '(?<num>\\d+!?)',
@@ -1331,6 +1339,7 @@ function tokenizeSpeech(raw) {
     if (g.q) toks.push({ type: 'tooth', t: QB[g.q] * 10 + Number(g.qd) });
     else if (g.half) toks.push({ type: 'badtooth' });
     else if (g.quad) toks.push({ type: 'quad', q: QB[g.quad] });
+    else if (g.ban) toks.push({ type: 'num', vals: [Number(g.ban)], ban: true });
     else if (g.mode) toks.push({ type: 'mode', mode: g.mode.startsWith('出血') ? 'bop' : 'ppd' });
     else if (g.where) toks.push({ type: 'where' });
     else if (g.side) toks.push({ type: 'side', side: g.side === '頬側' ? 'b' : 'l' });
@@ -1493,7 +1502,8 @@ function handleSpeech(raw, provisional = false, dry = false) {
   let target = null;
   let blocked = false; // 指定した歯が欠損などで見つからないときは、次の歯の指定まで数字を入れない
   const lastNum = toks.map((t) => t.type).lastIndexOf('num');
-  const hasTooth = toks.some((t) => t.type === 'tooth');
+  const hasTooth = toks.some((t) => t.type === 'tooth' || t.ban);
+  const fixes = []; // 1か所の言い直し（案内で確かめられるように読み上げる）
   const firstSiteWord = toks.findIndex((t) => t.type === 'side' || t.type === 'pos');
   let moved = false;
   const cur = () => ed.seq[ed.cur];
@@ -1524,6 +1534,12 @@ function handleSpeech(raw, provisional = false, dry = false) {
   };
 
   for (const tk of toks) {
+    if (tk.ban) { // 「5番」：直前に入れたエリア（なければ今のエリア）の5番。エリアの区切りの直後でも、言い終えたエリアの歯を直せる
+      moveToTarget(); blocked = false;
+      const base = voice.lastSite || cur();
+      target = { t: quad(base.t) * 10 + tk.vals[0], side: base.k[0], pos: null, named: true };
+      continue;
+    }
     if (tk.type === 'tooth') { moveToTarget(); blocked = false; target = { t: tk.t, side: null, pos: null, named: true }; }
     else if (tk.type === 'badtooth' || tk.type === 'quad') { target = null; blocked = true; done.push('歯の名前が聞き取れませんでした（上下か番号が抜けています）。入力していません'); }
     else if (tk.type === 'side') { if (blocked) continue; target ||= { t: cur().t, side: null, pos: null }; target.side = tk.side; target.named = true; }
@@ -1545,8 +1561,19 @@ function handleSpeech(raw, provisional = false, dry = false) {
         done.push('近心・遠心・中央が聞き取れませんでした。入力していません');
         continue;
       }
+      // 「5番 中央 4」「右上6 口蓋側 近心 5」のように1か所だけ言い直したときは、入れたあとカーソルを元の場所に戻す
+      const back = target && target.pos && tk.vals.length === 1 ? { cur: ed.cur, ended: voice.endedSite } : null;
       moveToTarget();
       if (blocked) continue;
+      if (back) {
+        const s = cur();
+        setField(s, 'ppd', tk.vals[0]);
+        voice.lastSite = s;
+        done.push(`${shortSite(s)} ${tk.vals[0]}`);
+        fixes.push(`${toothName(s.t)} ${s.k[0] !== ed.seq[back.cur].k[0] ? `${sideName(s.t, s.k[0])} ` : ''}${POS[s.k[1]]} ${tk.vals[0]}`); // 今と違う側なら側も言う
+        ed.cur = back.cur; voice.endedSite = back.ended;
+        continue;
+      }
       for (const n of tk.vals) {
         if (T[cur().t].missing) { const j = stepPPD(1); if (j === ed.cur) break; ed.cur = j; }
         const s = cur();
@@ -1573,6 +1600,7 @@ function handleSpeech(raw, provisional = false, dry = false) {
   if (moved && !ops.length) done.push(`${siteName(cur().t, cur().k)} へ移動しました`);
   if (dry) return { ops, done };
   voice.lastGuide = ppdGuide(cur0, ed.cur, ops, done, complete0, ppdComplete(), moved && !ops.length, moved);
+  if (fixes.length && guideOn('enabled')) voice.lastGuide.unshift({ text: fixes.join('、') });
 
   if (ops.length) {
     voice.hist.push(ops);
