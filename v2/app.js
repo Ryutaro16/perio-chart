@@ -1257,7 +1257,7 @@ function pauseRec() {
     const done = () => { if (!fin) { fin = true; voice.pauseDone = null; res(); } };
     voice.pauseDone = done;
     try { r.stop(); } catch { done(); }
-    setTimeout(done, 900);
+    setTimeout(done, 1500); // 止まった知らせ（onend）が来ないときの保険。早すぎると、まだ聞いている間に案内を話して自分の声を拾う
     renderVoice();
   });
 }
