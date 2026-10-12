@@ -464,3 +464,13 @@ body.pr-portrait #print .chart i.dif { font-size: 6pt; }
 
 .sortbar { display: flex; align-items: center; gap: 10px; margin: -2px 0 10px; }
 .sortbar .grow { text-align: right; }
+.pname { min-width: 0; }
+.pname small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.brandbar h1 { white-space: nowrap; }
+
+/* 完了のときの入力漏れの確認 */
+.gaplist { display: grid; gap: 8px; margin: 12px 0 4px; }
+.gapitem { display: flex; align-items: center; gap: 10px; text-align: left; width: 100%; padding: 12px 14px; min-height: 50px;
+  border: 1px solid #f5d08a; background: #fff8eb; border-radius: 12px; font-size: 15px; }
+.gapitem b { color: #92400e; }
+.gapitem span { margin-left: auto; color: var(--line-strong); font-size: 22px; }

@@ -611,13 +611,45 @@ async function openEditor(examId) {
   $('#mic').onclick = () => voiceToggle('ppd');
   $('#micbop').onclick = () => voiceToggle('bop');
   $('#back').onclick = leave;
-  $('#done').onclick = leave;
+  $('#done').onclick = async () => { await flushSave(); if (await finishCheck(exam)) leave(); };
   $('#prt').onclick = async () => { await flushSave(); await printExam(patient, exam); };
   $('#exdate').onchange = (e) => { if (e.target.value) { exam.date = e.target.value; touch(false); } };
   $('#exby').oninput = (e) => { exam.examiner = e.target.value.trim(); touch(false); };
   $('#chart').onclick = onChartTap;
   $('#pad').onclick = onPadTap;
   refresh();
+}
+
+// 「完了」のときの入力漏れの確認。漏れがなければそのまま終える。項目を押すと、その入力に戻る
+async function finishCheck(ex) {
+  const T = ex.teeth, present = ALL.filter((t) => !T[t].missing);
+  const gaps = [];
+  const ppdLeft = present.reduce((n, t) => n + SITES.filter((k) => T[t].ppd[k] == null).length, 0);
+  if (ppdLeft) gaps.push(['ppd', `ポケット：<b>${ppdLeft}部位</b>が未入力`]);
+  const mobLeft = present.filter((t) => T[t].mob == null).length;
+  if (mobLeft) gaps.push(['mob', `動揺度：<b>${mobLeft}歯</b>が未入力`]);
+  if (!hasPlaque(ex) && !plaqueNone(ex)) gaps.push(['pcr', 'プラーク：未入力（付いていなければ「付着なし」）']);
+  const carried = carriedCount(ex);
+  if (carried) gaps.push(['ppd', `前回から引き継いで<b>まだ確定していない値が${carried}か所</b>（薄い色の値）`]);
+  if (!ex.examiner) gaps.push(['by', '検査者が未入力']);
+  if (!gaps.length) return true;
+  return new Promise((resolve) => {
+    openDialog(`<div class="dlg-body"><h2>入力漏れの確認</h2>
+      <p class="sub">次の項目がまだです。押すとその入力に戻ります。測っていない項目なら、このまま終えてかまいません。</p>
+      <div class="gaplist">${gaps.map(([m, t]) => `<button class="gapitem" data-gap="${m}">${t}<span>›</span></button>`).join('')}</div>
+      <div class="dlg-actions"><button class="btn" data-ans="0">入力に戻る</button><div class="grow"></div><button class="btn primary" data-ans="1">このまま終える</button></div></div>`);
+    const d = $('#dlg');
+    d.onclose = () => resolve(false);
+    d.querySelectorAll('[data-ans]').forEach((b) => (b.onclick = () => { d.onclose = null; closeDialog(); resolve(b.dataset.ans === '1'); }));
+    d.querySelectorAll('[data-gap]').forEach((b) => (b.onclick = () => {
+      d.onclose = null; closeDialog(); resolve(false);
+      const m = b.dataset.gap;
+      if (m === 'by') { $('#exby').focus(); return; }
+      ed.mode = m;
+      if (m === 'ppd') { const i = ed.seq.findIndex((st) => !T[st.t].missing && T[st.t].ppd[st.k] == null); if (i >= 0) ed.cur = i; }
+      refresh();
+    }));
+  });
 }
 
 function refresh() {
