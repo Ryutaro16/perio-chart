@@ -474,3 +474,7 @@ body.pr-portrait #print .chart i.dif { font-size: 6pt; }
   border: 1px solid #f5d08a; background: #fff8eb; border-radius: 12px; font-size: 15px; }
 .gapitem b { color: #92400e; }
 .gapitem span { margin-left: auto; color: var(--line-strong); font-size: 22px; }
+
+.empty.first { padding: 34px 16px; }
+.empty.first b { font-size: 18px; color: var(--ink); }
+.row-tools.center { justify-content: center; }

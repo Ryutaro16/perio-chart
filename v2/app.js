@@ -392,7 +392,15 @@ async function showList() {
           ${i.n ? `<span class="pkeys">${i.keys}</span>` : ''}
           <span class="pmeta">${i.n ? `${fmtDate(i.last)}<small>検査 全${i.n}回</small>` : '<small>検査なし</small>'}</span><span class="chev">›</span></button>`;
       }).join('')
-      : `<p class="empty">${patients.length ? '該当する患者がいません' : 'まだ患者が登録されていません。「＋ 新規患者」から登録してください。'}</p>`;
+      : patients.length ? '<p class="empty">該当する患者がいません</p>'
+        : `<div class="empty first"><b>まだ患者が登録されていません</b><p>「＋ 新規患者」から登録してください。試しに使うときは、架空の患者で始められます。</p>
+          <div class="row-tools center"><button class="btn" id="demo1">見本の患者を追加して試す</button><button class="btn" data-go="settings">バックアップから読み込む</button></div></div>`;
+    if ($('#demo1')) $('#demo1').onclick = async () => {
+      const { patient, exams } = makeDemo();
+      await DB.put('patients', patient);
+      for (const ex of exams) await DB.put('exams', ex);
+      showPatient(patient.id);
+    };
   };
   draw();
   $('#q').addEventListener('input', draw);
