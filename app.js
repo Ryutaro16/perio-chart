@@ -943,13 +943,13 @@ function voiceInterim(text) {
     const before = { cur: ed.cur, lastSite: voice.lastSite, endedSite: voice.endedSite, ctx: voice.ctx ? { ...voice.ctx } : null };
     const ops = handleSpeech(text, true);
     if (ops) voice.prov = { text, ops, ...before, guide: voice.lastGuide };
-    ppdCue();
+    if (ppdCue() === 'area') cutRec();
   }, VOICE_EARLY_MS);
 }
 function voiceFinal(text) {
   clearTimeout(voice.timer);
   const startIdx = voice.prov ? voice.prov.cur : ed.cur; // 話し始めたときのカーソル
-  if (voice.prov && sameSpeech(voice.prov.text, text)) { const g = voice.prov.guide; voice.prov = null; voice.cue = null; addVoiceLog(text, startIdx); guide(g); return; } // 仮入力のまま確定
+  if (voice.prov && sameSpeech(voice.prov.text, text) && !CMD_RE.test(text)) { const g = voice.prov.guide; voice.prov = null; voice.cue = null; addVoiceLog(text, startIdx); guide(g); return; } // 仮入力のまま確定
   if (!voice.prov) voice.cue = ed.cur;
   undoProv(); // 仮入力と違う文で確定したら、仮入力を戻してから入れ直す
   handleSpeech(text);
@@ -1026,6 +1026,7 @@ function voiceStart() {
   };
   // 無音が続くと止まることがあるので、聞き取り中は自動で再開する
   r.onend = () => {
+    if (voice.prov && voice.rec === r) voiceFinal(voice.prov.text); // 確定が届かないまま止まったときは、仮入力をそのまま確定する
     if (voice.paused) { if (voice.pauseDone) voice.pauseDone(); return; }
     if (voice.on && voice.rec === r) setTimeout(() => { if (voice.on && voice.rec === r && !voice.paused) try { r.start(); } catch { /* 再開済み */ } }, 250);
   };
@@ -1162,6 +1163,7 @@ function failSpeech(w) {
   const num = (x) => x.replace(/(右上|左上|右下|左下)/g, '');
   let m;
   if ((m = w.match(/^(.+?)の部位が聞き取れません/))) return `${num(m[1])}番、部位をもう一度`;
+  if ((m = w.match(/聞き取れない言葉がありました。(\S+) (\S+)から/))) return `${num(m[1])}番 ${m[2]}から、もう一度`;
   if ((m = w.match(/^(.+?)は欠損です/))) return `${num(m[1])}番は欠損です`;
   if (/歯の番号が聞き取れません|番の歯はありません/.test(w)) return '番号をもう一度';
   if (/歯の名前が聞き取れません/.test(w)) return '歯の名前をもう一度';
@@ -1178,13 +1180,21 @@ const flagWord = (o, T) => (o.field === 'pus' ? '排膿' : T[o.t].bop[o.k] ? '�
 // 話している最中の合図（ポケット）：仮入力でエリアの区切りを越えたらチャイム、次の歯に移ったら「ポッ」。
 // iPadは続けて話した数字を1つの文にまとめ、話し終えるまで確定しないため、言葉ではない音で知らせる（音なら聞き取りを止めずに鳴らせる）
 function ppdCue() {
-  if (voice.mode === 'bop' || voice.cue == null || !ed.exam) return;
+  if (voice.mode === 'bop' || voice.cue == null || !ed.exam) return null;
   const from = voice.cue, to = ed.cur;
   voice.cue = to;
-  if (to <= from) return;
+  if (to <= from) return null;
   const a = ed.seq[from], b = ed.seq[to];
-  if (areaName(a) !== areaName(b)) { if (guideOn('boundary')) playTone('chime'); }
-  else if (a.t !== b.t && guideOn('tooth')) playTone('pop');
+  if (areaName(a) !== areaName(b)) { if (guideOn('boundary')) playTone('chime'); return 'area'; }
+  if (a.t !== b.t && guideOn('tooth')) playTone('pop');
+  return null;
+}
+// エリアの最後まで入ったら、聞き取りを一度止めて確定させる（iPadは止めると、そこまでの言葉を確定して届ける）。
+// 1回の発話を短くして、聞き直しによる書き換えや反応の遅れを防ぐ。確定のあとの案内（「次、左上頬側」）が終わると再開する
+function cutRec() {
+  const r = voice.rec;
+  if (!r || !voice.on || voice.paused) return;
+  try { r.stop(); } catch { /* 停止済み */ }
 }
 const ECHO_MAX = 6; // 復唱するのは、入れた数が多くないときだけ（長い読み上げのあいだは聞き取れないため）
 // ポケットの音声入力のあとの案内：警告／小さな音／復唱／今の位置（区切り・歯の番号・欠損歯・完了）
@@ -1306,9 +1316,12 @@ function tokenizeSpeech(raw) {
   ].join('|'), 'g');
   const QB = { 右上: 1, 左上: 2, 左下: 3, 右下: 4 };
   const toks = [];
-  let m;
+  let m, end = 0;
   while ((m = re.exec(s))) {
     const g = m.groups;
+    // 数字のあとに読めない言葉（「さささ」など）があれば印を残す。後ろに数字が続くと部位がずれるため、そこで止める
+    if (toks.length && toks[toks.length - 1].type === 'num' && /\p{L}/u.test(s.slice(end, m.index))) toks.push({ type: 'junk' });
+    end = m.index + m[0].length;
     if (g.q) toks.push({ type: 'tooth', t: QB[g.q] * 10 + Number(g.qd) });
     else if (g.half) toks.push({ type: 'badtooth' });
     else if (g.quad) toks.push({ type: 'quad', q: QB[g.quad] });
@@ -1434,6 +1447,7 @@ function handleBopSpeech(raw, provisional, dry) {
   return ops;
 }
 
+const CMD_RE = /出血モード|ポケットモード|今どこ|いまどこ|現在地|どこ/;
 function handleSpeech(raw, provisional = false, dry = false) {
   voice.lastGuide = null;
   if (!dry && view.name === 'editor' && ed.exam) {
@@ -1442,13 +1456,24 @@ function handleSpeech(raw, provisional = false, dry = false) {
     const mt = settings.guide.modeVoice && t0.find((t) => t.type === 'mode');
     const wt = settings.guide.where && t0.find((t) => t.type === 'where');
     if (mt || wt) {
-      if (provisional) return null;
+      // 同じ文の中で、その前に話した数字なども入れる（iPadは続けて話すと1つの文にまとめるため）
+      const cm = raw.match(CMD_RE);
+      const before = cm ? raw.slice(0, cm.index) : '', after = cm ? raw.slice(cm.index + cm[0].length) : '';
+      const ops = tokenizeSpeech(before).length ? handleSpeech(before, provisional) || [] : [];
+      if (provisional) return ops.length ? ops : null;
+      const g0 = ops.length ? voice.lastGuide || [] : [], r0 = ops.length ? voice.lastResult : '';
       if (mt && mt.mode !== voice.mode) setVoiceMode(mt.mode);
       const msg = mt ? startText() : voice.mode === 'bop' ? `${ctxLabel(voice.ctx)}です` : `${siteSpeech(ed.seq[ed.cur])}です`;
-      voice.lastResult = msg;
-      voiceMsg(`<b>「${esc(raw.trim())}」</b> → ${esc(msg)}`);
-      voice.lastGuide = (mt ? guideOn('start') : guideOn('where')) ? [{ tone: mt ? 'chime' : null, text: msg }] : null;
-      return [];
+      voice.lastResult = r0 ? `${r0}、${msg}` : msg;
+      voiceMsg(`<b>「${esc(raw.trim())}」</b> → ${esc(voice.lastResult)}`);
+      voice.lastGuide = [...g0, ...((mt ? guideOn('start') : guideOn('where')) ? [{ tone: mt ? 'chime' : null, text: msg }] : [])];
+      if (mt && tokenizeSpeech(after).length) { // 「出血モード 右上頬側 7 遠心」のように、続けて話した分
+        const g1 = voice.lastGuide, r1 = voice.lastResult;
+        ops.push(...(handleSpeech(after) || []));
+        voice.lastGuide = [...g1, ...(voice.lastGuide || [])];
+        voice.lastResult = `${r1}、${voice.lastResult}`;
+      }
+      return ops;
     }
   }
   if (voice.mode === 'bop' && (dry || (view.name === 'editor' && ed.exam))) return handleBopSpeech(raw, provisional, dry);
@@ -1497,7 +1522,12 @@ function handleSpeech(raw, provisional = false, dry = false) {
     else if (tk.type === 'badtooth' || tk.type === 'quad') { target = null; blocked = true; done.push('歯の名前が聞き取れませんでした（上下か番号が抜けています）。入力していません'); }
     else if (tk.type === 'side') { if (blocked) continue; target ||= { t: cur().t, side: null, pos: null }; target.side = tk.side; target.named = true; }
     else if (tk.type === 'pos') { if (blocked) continue; target ||= { t: cur().t, side: cur().k[0], pos: null }; target.pos = tk.pos; }
-    else if (tk.type === 'num') {
+    else if (tk.type === 'junk') {
+      if (blocked || !toks.slice(toks.indexOf(tk) + 1).some((t) => t.type === 'num')) continue;
+      target = null; blocked = true;
+      const s = cur();
+      done.push(`聞き取れない言葉がありました。${toothName(s.t)} ${POS[s.k[1]]}から入力していません`);
+    } else if (tk.type === 'num') {
       if (!hasTooth && firstSiteWord > toks.indexOf(tk)) {
         target = null; blocked = true;
         done.push('歯の名前が聞き取れませんでした。入力していません');
@@ -1849,7 +1879,7 @@ function printTrend(p, liveAsc) {
 /* ================= 設定：音声の案内 ================= */
 const GUIDE_ITEMS = [
   ['知らせ', [['fail', '聞き取れなかったとき', '警告音＋「6番、部位をもう一度」'], ['area', 'エリアが変わったとき（出血）', 'チャイム＋「左上、頬側」'], ['start', '始めたとき・モードを替えたとき', 'チャイム＋「出血モード、右上頬側から」']]],
-  ['ポケットの道案内', [['boundary', '区切り', '話している最中にチャイム、話し終えたら「次、左上頬側、1番」'], ['tooth', '歯の番号', '話している最中は次の歯に移るたびに「ポッ」、話し終えたら「5番」'], ['missing', '欠損歯を飛ばすとき', '「7番は欠損、6番へ」'], ['done', '全部位の入力完了', 'チャイム＋「全部位、入力しました」']]],
+  ['ポケットの道案内', [['boundary', '区切り', 'エリアの最後まで入ったらチャイム。聞き取りを一度止めて確定し、「次、左上頬側、1番」と言ってから再開'], ['tooth', '歯の番号', '話している最中は次の歯に移るたびに「ポッ」、話し終えたら「5番」'], ['missing', '欠損歯を飛ばすとき', '「7番は欠損、6番へ」'], ['done', '全部位の入力完了', 'チャイム＋「全部位、入力しました」']]],
   ['確認', [['echo', '入れた内容の復唱', '「3、3、4」「7番 遠心 近心」（ポケットは数字が6個以下のとき）。そのぶん待ち時間が増えます'], ['okBeep', '正しく入ったときの小さな音', '入るたびに「ポッ」']]],
 ];
 const OP_ITEMS = [['where', '「今どこ？」に答える', '「右上5、頬側、遠心です」'], ['modeVoice', '声でモード切り替え', '「出血モード」「ポケットモード」と言って切り替え'],
@@ -1858,7 +1888,7 @@ function guideSettingsHTML() {
   const g = settings.guide;
   const sw = ([k, l, d], dis) => `<label class="sw${dis ? ' dis' : ''}"><input type="checkbox" data-g="${k}" ${g[k] ? 'checked' : ''} ${dis ? 'disabled' : ''}><span><b>${l}</b><small>${d}</small></span></label>`;
   return `<section class="card"><h2>音声の案内</h2>
-      <p class="sub">画面を見なくても入力できるように、声とチャイムで知らせます。話している最中は音（チャイム・「ポッ」）だけで知らせ、聞き取りは止めません。話し終えたあとの言葉の案内のあいだ（1秒ほど）は聞き取りを止めるので、案内が終わってから話してください。入力画面の「🔈 案内」で、その場だけ止めることもできます。</p>
+      <p class="sub">画面を見なくても入力できるように、声とチャイムで知らせます。話している最中は音（「ポッ」）だけで知らせ、聞き取りは止めません。エリアの区切り（チャイム）と、話し終えたあとの言葉の案内のあいだ（1〜3秒）は聞き取りを止めるので、案内が終わってから話してください。入力画面の「🔈 案内」で、その場だけ止めることもできます。</p>
       ${sw(['enabled', '音声の案内を使う', 'オフにすると、下の案内をすべて止めます'], false)}
       ${GUIDE_ITEMS.map(([h, list]) => `<div class="swgroup"><div class="swh">${h}</div>${list.map((it) => sw(it, !g.enabled)).join('')}</div>`).join('')}
       <div class="swgroup"><div class="swh">声の速さ</div><div class="row-tools">
