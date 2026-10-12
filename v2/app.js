@@ -1330,7 +1330,7 @@ function showVoiceHelp() {
       ${row('「5番 中央 4」', '<b>言い直し</b>：直前に入れたエリアの5番。入れたあと元の場所に戻る')}
       ${row('「右上6 口蓋側 近心 5」', '<b>場所を指定</b>して1か所入れる（続けて「遠心 4」で同じ歯）')}
       ${row('「右上6」', 'その歯へ移動して、そこから順に入れる')}
-      ${row('「取り消し」', '直前の音声入力を取り消す')}
+      ${row('「取り消し」', '最後に入れた<b>歯1本分</b>を取り消す。その歯から言い直せる')}
       ${row('「戻る」「次」', 'カーソルを1つ戻す・進める')}
     </table></section>
     <section><h3>🎤 出血</h3><table>
@@ -1445,6 +1445,18 @@ function tokenizeSpeech(raw) {
 }
 
 const shortSite = (s) => `${toothName(s.t)}${sideName(s.t, s.k[0])[0]}${POS[s.k[1]][0]}`;
+// 音声の取り消しは「最後の歯1本分」ずつ。エリアごとに確定するので、1回で1エリア分（21部位）が消えないように
+function popVoiceUndo() {
+  const last = voice.hist.pop();
+  if (!last || !last.length) return null;
+  const lt = last[last.length - 1].t;
+  let i = last.length;
+  while (i > 0 && last[i - 1].t === lt) i--;
+  const part = last.slice(i), rest = last.slice(0, i);
+  if (rest.length) voice.hist.push(rest);
+  undoVoiceOps(part);
+  return part;
+}
 function undoVoiceOps(ops) {
   const T = ed.exam.teeth;
   for (const op of [...ops].reverse()) {
@@ -1497,12 +1509,13 @@ function handleBopSpeech(raw, provisional, dry) {
     if (T[t].missing) { done.push(`${toothName(t)}は欠損です`); return; }
     teeth = [t];
   };
+  let undone = null;
   const undoLast = () => {
     if (ops.length) voice.hist.push(ops.splice(0));
-    const l = voice.hist.pop();
-    if (!l) { done.push('取り消せる入力がありません'); return; }
-    undoVoiceOps(l);
-    done.push('直前の音声入力を取り消しました');
+    const part = popVoiceUndo();
+    if (!part) { done.push('取り消せる入力がありません'); return; }
+    undone = part;
+    done.push(`${toothName(part[0].t)}の分を取り消しました`);
   };
   for (const tk of toks) {
     if (tk.type === 'quad') { dropPending(); ctx.q = tk.q; voice.bopTooth = null; done.push(`${ctxLabel(ctx)} へ`); }
@@ -1544,6 +1557,7 @@ function handleBopSpeech(raw, provisional, dry) {
   }
   if (dry) return { ops, done };
   voice.lastGuide = bopGuide(ctx0, ctx, ops, done);
+  if (undone && guideOn('enabled')) voice.lastGuide.push({ text: `${undone[0].t % 10}番、取り消しました` });
   if (ops.length) { voice.hist.push(ops); ed.undo = { kind: 'voice', ops }; ed.flash = '音声で入力しました'; }
   voice.lastResult = done.length ? done.join('、') : '入力できる言葉がありませんでした';
   setVoiceResult(raw, done, voice.lastResult);
@@ -1594,6 +1608,7 @@ function handleSpeech(raw, provisional = false, dry = false) {
   const lastNum = toks.map((t) => t.type).lastIndexOf('num');
   const hasTooth = toks.some((t) => t.type === 'tooth' || t.ban);
   const fixes = []; // 1か所の言い直し（案内で確かめられるように読み上げる）
+  let undone = null; // 「取り消し」で戻した分
   // 部位を指定して入れた直後は、歯の名前を省いた「遠心 4」「口蓋側 中央 3」も同じ歯に入れる（順に入れ始めたら解除）
   const specTarget = () => (voice.specTooth ? { t: voice.specTooth.t, side: voice.specTooth.side, pos: null, named: true } : null);
   const specDone = (s) => { voice.specTooth = { t: s.t, side: s.k[0] }; };
@@ -1620,10 +1635,10 @@ function handleSpeech(raw, provisional = false, dry = false) {
   };
   const undoLast = () => {
     if (ops.length) voice.hist.push(ops.splice(0));
-    const last = voice.hist.pop();
-    if (!last) { done.push('取り消せる入力がありません'); return; }
-    undoVoiceOps(last);
-    done.push('直前の音声入力を取り消しました');
+    const part = popVoiceUndo();
+    if (!part) { done.push('取り消せる入力がありません'); return; }
+    undone = part;
+    done.push(`${toothName(part[0].t)}の分を取り消しました`);
   };
 
   for (const tk of toks) {
@@ -1703,6 +1718,10 @@ function handleSpeech(raw, provisional = false, dry = false) {
   if (provisional && fixes.length && lastTok && (lastTok.type === 'num' || lastTok.type === 'flag')) voice.specCut = true;
   voice.lastGuide = ppdGuide(cur0, ed.cur, ops, done, complete0, ppdComplete(), moved && !ops.length, moved);
   if (fixes.length && guideOn('enabled')) voice.lastGuide.unshift({ text: fixes.join('、') });
+  if (undone && !ops.length && guideOn('enabled')) { // 取り消したら、どこから言い直すかを伝える
+    const c = cur();
+    voice.lastGuide = [{ text: `取り消しました。${c.t % 10}番 ${POS[c.k[1]]}から` }];
+  }
 
   if (ops.length) {
     voice.hist.push(ops);
@@ -1727,13 +1746,13 @@ document.addEventListener('keydown', (e) => {
     voiceToggle(voice.on ? voice.mode : ed.mode === 'bop' ? 'bop' : 'ppd');
   } else if (['ArrowLeft', 'ArrowUp', 'PageUp'].includes(e.key)) {
     e.preventDefault();
-    const last = voice.hist.pop();
+    const last = popVoiceUndo();
     if (!last) { voiceMsg('取り消せる入力がありません'); if (guideOn('fail')) guide([{ tone: 'buzz', text: '取り消せる入力がありません' }]); return; }
-    undoVoiceOps(last);
     ed.flash = '音声の入力を取り消しました';
     touch();
-    voiceMsg('直前の音声入力を取り消しました');
-    if (guideOn('enabled')) guide([{ text: '取り消しました' }]); // 取り消しの知らせは、復唱をオフにしても残す
+    voiceMsg(`${toothName(last[0].t)}の分を取り消しました`);
+    const c = ed.seq[ed.cur];
+    if (guideOn('enabled')) guide([{ text: voice.mode === 'bop' ? `${last[0].t % 10}番、取り消しました` : `取り消しました。${c.t % 10}番 ${POS[c.k[1]]}から` }]); // 取り消しの知らせは、復唱をオフにしても残す
   }
 });
 
