@@ -1313,11 +1313,44 @@ function renderVoice() {
   const where = voice.on && voice.mode !== 'bop' && c && ed.exam
     ? `<span class="vwhere"><small>次</small>${voice.endedSite ? '全部位 入力済み' : `${toothName(c.t)}<b>${sideName(c.t, c.k[0])} ${POS[c.k[1]]}</b>`}</span>` : '';
   v.innerHTML = `<div class="vrow">${state}${where}${voice.on && voice.mode === 'bop' && voice.ctx ? `<span class="vctx">出血入力中：${ctxLabel(voice.ctx)}</span>` : ''}${voice.warn ? `<span class="vwarn">⚠ ${esc(voice.warn)}</span>` : ''}<span class="vm">${voice.msg}</span>${voice.interim ? `<span class="vi">${esc(voice.interim)}…</span>` : ''}
-    <button class="tool undo vlogbtn" id="vmute">${voice.muted ? '🔇 案内オフ' : '🔈 案内'}</button><button class="tool undo" id="vlog">聞き取りの記録</button><button class="tool undo" id="vtest">読み上げテスト</button></div>
+    <button class="tool undo vlogbtn" id="vhelp">？ 話し方</button><button class="tool undo" id="vmute">${voice.muted ? '🔇 案内オフ' : '🔈 案内'}</button><button class="tool undo" id="vlog">聞き取りの記録</button><button class="tool undo" id="vtest">読み上げテスト</button></div>
 `;
   $('#vmute').onclick = () => { voice.muted = !voice.muted; if (voice.muted) { guideQ.length = 0; try { speechSynthesis.cancel(); } catch { /* なし */ } } renderVoice(); };
   $('#vlog').onclick = showVoiceLog;
   $('#vtest').onclick = showVoiceTest;
+  $('#vhelp').onclick = showVoiceHelp;
+}
+// 話し方の早見表（言い方と、音の意味）
+function showVoiceHelp() {
+  const row = (say, what) => `<tr><td class="say">${say}</td><td>${what}</td></tr>`;
+  openDialog(`<div class="dlg-body vhelp"><h2>音声入力の話し方</h2>
+    <div class="vhcols"><section><h3>🎤 ポケット</h3><table>
+      ${row('「3、3、4」', '今の場所から順に入れて進む')}
+      ${row('「4 プラス」', '入れた部位に出血。「排膿」「マイナス」（出血なし）も')}
+      ${row('「5番 中央 4」', '<b>言い直し</b>：直前に入れたエリアの5番。入れたあと元の場所に戻る')}
+      ${row('「右上6 口蓋側 近心 5」', '<b>場所を指定</b>して1か所入れる（続けて「遠心 4」で同じ歯）')}
+      ${row('「右上6」', 'その歯へ移動して、そこから順に入れる')}
+      ${row('「取り消し」', '直前の音声入力を取り消す')}
+      ${row('「戻る」「次」', 'カーソルを1つ戻す・進める')}
+    </table></section>
+    <section><h3>🎤 出血</h3><table>
+      ${row('「右上 頬側」', '入れる列を決める（「口蓋側」だけで反対側へ）')}
+      ${row('「7 遠心 近心」', '今の列の7番に出血。続けて「中央」で同じ歯に追加')}
+      ${row('「3 全部」', '3部位すべてに出血')}
+      ${row('「マイナス」「排膿」', '直前の分を外す・排膿にする')}
+    </table>
+    <h3>どちらでも</h3><table>
+      ${row('「今どこ」', '今の場所を声で答える')}
+      ${row('「出血モード」「ポケットモード」', 'モードを切り替える')}
+      ${row('「停止」', '聞き取りを止める')}
+    </table></section></div>
+    <h3>音の意味</h3><div class="vhsounds">
+      <span><b>ポッ</b>次の歯に移った（出血：歯が入った）</span>
+      <span><b>チャイム</b>エリアの区切り。<u>声の案内が終わってから</u>続きを話す</span>
+      <span><b>ブー</b>入らなかった。案内のとおり言い直す</span>
+      <span><b class="ok">● どうぞ</b>聞いています</span><span><b class="ng">🔈 待って</b>案内中（話しても入りません）</span></div>
+    <p class="sub">部位を指定して入れたときは、1か所ごとに文を区切って確定します。区切りのあとは、帯が「どうぞ」になってから話してください。</p>
+    <div class="dlg-actions"><div class="grow"></div><button class="btn primary" data-close>閉じる</button></div></div>`, true);
 }
 
 // 聞き取った文字を、入力の指示（トークン）に分ける

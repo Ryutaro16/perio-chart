@@ -449,3 +449,15 @@ body.pr-portrait #print .chart td.pcr { height: 6.4mm; }
 body.pr-portrait #print .pcrsvg { width: 5.4mm; height: 5.4mm; }
 body.pr-portrait #print .chart i.dif { font-size: 6pt; }
 .print-sample.pr-portrait #print { width: 188mm; }
+
+/* 話し方の早見表 */
+.vhelp h3 { font-size: 15px; margin: 14px 0 6px; color: var(--accent); }
+.vhelp .vhcols { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.vhelp table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.vhelp td { padding: 6px 8px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+.vhelp td.say { font-weight: 800; white-space: nowrap; color: var(--ink); width: 1%; }
+.vhelp .vhsounds { display: flex; flex-wrap: wrap; gap: 8px; }
+.vhelp .vhsounds span { background: #f7f9fa; border: 1px solid var(--line-soft); border-radius: 10px; padding: 6px 10px; font-size: 14px; }
+.vhelp .vhsounds b { margin-right: 6px; }
+.vhelp .vhsounds b.ok { color: #166534; } .vhelp .vhsounds b.ng { color: #92400e; }
+@media (max-width: 760px) { .vhelp .vhcols { grid-template-columns: 1fr; } .vhelp td.say { white-space: normal; } }
