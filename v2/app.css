@@ -478,3 +478,5 @@ body.pr-portrait #print .chart i.dif { font-size: 6pt; }
 .empty.first { padding: 34px 16px; }
 .empty.first b { font-size: 18px; color: var(--ink); }
 .row-tools.center { justify-content: center; }
+
+.vinfo { display: block; font-size: 11px; color: var(--sub); margin-top: 3px; }

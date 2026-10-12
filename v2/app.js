@@ -1005,14 +1005,32 @@ const VOICE_EARLY_MS = 350; // 話している途中でも、この時間言葉�
 const sameSpeech = (a, b) => { const n = (t) => t.replace(/[\s、。,.!?！？]/g, ''); return n(a) === n(b); };
 // 認識結果の束を処理する。途中結果は複数に分かれて届くことがあるので、つなげて1つの文として扱う
 function onVoiceResults(items) {
-  let interim = '';
+  let interim = '', fin = false;
   for (const it of items) {
-    if (it.isFinal) voiceFinal(it.text);
+    if (it.isFinal) { voiceFinal(it.text); fin = true; }
     else interim += it.text;
   }
   voice.interim = interim;
-  if (interim.trim()) voiceInterim(interim);
+  if (interim.trim()) { diag().ev++; voiceInterim(interim); }
+  // 黙ったら区切る：聞き取った文字が変わらないまま一定時間たったら、その文を確定させる
+  if (fin || !sameSpeech(voice.heard || '', interim)) { voice.heard = interim; armSilence(); }
   renderVoice();
+}
+// 1つの文（発話）のあいだの様子。聞き取りの記録に残し、仮入力が出なかった原因を確かめられるようにする
+const diag = () => (voice.diag ||= { ev: 0, chg: 0, prov: 0, nul: 0, why: '' });
+function diagText(d, cut) {
+  if (!d) return cut ? `区切り：${cut}` : '';
+  return `途中の聞き取り${d.ev}回（変化${d.chg}）・仮入力${d.prov}回${d.nul ? `（入れず${d.nul}回：${d.why}）` : ''}・区切り：${cut || 'iPadが確定'}`;
+}
+const silenceSec = () => (settings.cutSilence == null ? 1 : settings.cutSilence);
+function armSilence() {
+  clearTimeout(voice.silTimer);
+  const sec = silenceSec();
+  if (!sec || !voice.on) return;
+  voice.silTimer = setTimeout(() => {
+    if (!voice.on || voice.paused || guiding || !(voice.prov || (voice.interim || '').trim())) return;
+    cutRec(`${sec}秒の間`);
+  }, sec * 1000);
 }
 function undoProv() {
   const p = voice.prov;
@@ -1030,8 +1048,13 @@ function undoProv() {
 function voiceInterim(text) {
   if (voice.discard) return; // フットスイッチで取り消した文の続き
   if (voice.prov && sameSpeech(voice.prov.text, text)) return;
+  // 同じ文字の途中結果が続けて届いても、待ち時間をやり直さない（やり直すと、いつまでも仮入力されないことがある）
+  if (voice.timer && sameSpeech(voice.pend || '', text)) return;
+  diag().chg++;
+  voice.pend = text;
   clearTimeout(voice.timer);
   voice.timer = setTimeout(() => {
+    voice.timer = null;
     const fresh = !voice.prov;
     undoProv();
     if (fresh) voice.cue = ed.cur; // 話し始め。ここから進んだぶんを合図する
@@ -1039,36 +1062,49 @@ function voiceInterim(text) {
       specTooth: voice.specTooth, bopTooth: voice.bopTooth, bopLast: voice.bopLast }; // 仮入力を戻すときに、言葉の続きの記憶も戻す
     voice.junkCut = false; voice.specCut = false;
     const ops = handleSpeech(text, true);
-    if (ops) voice.prov = { text, ops, ...before, guide: voice.lastGuide };
+    if (ops) { voice.prov = { text, ops, ...before, guide: voice.lastGuide }; diag().prov++; } else {
+      const d = diag(), tk = tokenizeSpeech(text);
+      d.nul++;
+      d.why = !tk.length ? '数字や言葉が読めない' : CMD_RE.test(text) ? '今どこ等' : tk.some((t) => ['undo', 'prev', 'next', 'stop'].includes(t.type)) ? '操作の言葉（次・戻る・取り消し等）' : 'その他';
+    }
     // 読めない言葉で止まったときも、ここで文を確定させる。続けて言い直すと同じ文の後ろにつながり、何度言っても同じ所で止まるため
     if (voice.mode === 'bop' && voice.specCut && ops && ops.length && guideOn('tooth')) playTone('pop'); // 出血：歯が入った合図
-    if (ppdCue() === 'area' || voice.junkCut || voice.specCut) cutRec();
+    const area = ppdCue() === 'area';
+    if (area || voice.junkCut || voice.specCut) cutRec(area ? 'エリアの区切り' : voice.junkCut ? '聞き取れない言葉' : '部位指定');
   }, VOICE_EARLY_MS);
 }
 function voiceFinal(text) {
-  clearTimeout(voice.timer);
+  clearTimeout(voice.timer); voice.timer = null;
   if (voice.discard) { voice.discard = false; voice.interim = ''; return; } // フットスイッチで取り消した文
   const startIdx = voice.prov ? voice.prov.cur : ed.cur; // 話し始めたときのカーソル
-  if (voice.prov && sameSpeech(voice.prov.text, text) && !CMD_RE.test(text)) { const g = voice.prov.guide; voice.prov = null; voice.cue = null; addVoiceLog(text, startIdx); guide(g); return; } // 仮入力のまま確定
+  if (voice.prov && sameSpeech(voice.prov.text, text) && !CMD_RE.test(text)) { // 仮入力のまま確定
+    const g = voice.prov.guide, quiet = /秒の間/.test(voice.cutReason || '');
+    voice.prov = null; voice.cue = null; addVoiceLog(text, startIdx); guide(quiet ? quietGuide(g) : g); return;
+  }
   if (!voice.prov) voice.cue = ed.cur;
   undoProv(); // 仮入力と違う文で確定したら、仮入力を戻してから入れ直す
   handleSpeech(text);
   ppdCue();
   voice.cue = null;
+  const quiet = /秒の間/.test(voice.cutReason || '');
   addVoiceLog(text, startIdx);
-  guide(voice.lastGuide);
+  guide(quiet ? quietGuide(voice.lastGuide) : voice.lastGuide);
 }
-const VOICE_LOG_MAX = 100;
+// 黙って区切ったときの案内：言葉の案内（「5番」など）は省き、音と警告・区切りの案内だけ残す。毎回の案内で聞き取りが止まらないように
+const quietGuide = (items) => (items || []).filter((g) => g.tone === 'buzz' || g.tone === 'chime' || g.tone === 'pop' || /次、|取り消しました/.test(g.text || ''));
+const VOICE_LOG_MAX = 200;
 function addVoiceLog(text, startIdx) {
   const s = ed.seq[startIdx];
-  voice.log.unshift({ id: uid(), time: new Date().toLocaleString('ja-JP'), start: s ? siteName(s.t, s.k) : '', raw: text, result: voice.lastResult || '', ok: null, correct: '' });
+  const info = diagText(voice.diag, voice.cutReason);
+  voice.diag = null; voice.cutReason = ''; voice.pend = '';
+  voice.log.unshift({ id: uid(), time: new Date().toLocaleString('ja-JP'), start: s ? siteName(s.t, s.k) : '', raw: text, result: voice.lastResult || '', ok: null, correct: '', info });
   voice.log.length = Math.min(voice.log.length, VOICE_LOG_MAX);
   saveVoiceLog();
 }
 const saveVoiceLog = () => DB.put('settings', { key: 'voicelog', items: voice.log }).catch(() => {});
 function showVoiceLog() {
   const okBtns = (l) => `<button class="okb${l.ok === true ? ' on' : ''}" data-ok="${l.id}" data-v="1">○</button><button class="okb ng${l.ok === false ? ' on' : ''}" data-ok="${l.id}" data-v="0">×</button>`;
-  const rows = voice.log.map((l) => `<tr><td class="nw">${esc(l.time)}</td><td>${esc(l.start || '')}</td><td>「${esc(l.raw)}」</td><td>${esc(l.result)}</td>
+  const rows = voice.log.map((l) => `<tr><td class="nw">${esc(l.time)}</td><td>${esc(l.start || '')}</td><td>「${esc(l.raw)}」</td><td>${esc(l.result)}${l.info ? `<small class="vinfo">${esc(l.info)}</small>` : ''}</td>
     <td class="nw">${okBtns(l)}</td><td>${l.ok === false ? `<input class="fix" data-fix="${l.id}" value="${esc(l.correct)}" placeholder="例：右上6 頬側 近心 4">` : ''}</td></tr>`).join('');
   openDialog(`<div class="dlg-body"><h2>聞き取りの記録（新しい順）</h2>
     <p class="hint">間違っていた行は「×」を押して、「正しくは」に本当に言った内容を書いてください。「記録を書き出す」で私に送れます。</p>
@@ -1084,8 +1120,8 @@ function showVoiceLog() {
   }));
   d.querySelectorAll('[data-fix]').forEach((inp) => (inp.onchange = () => { voice.log.find((x) => x.id === inp.dataset.fix).correct = inp.value.trim(); saveVoiceLog(); }));
   $('#vlogExport').onclick = () => exportCSV(`voice-log-${stamp()}.csv`, '聞き取りの記録',
-    ['時刻', '開始位置', '聞き取った言葉', '入力した内容', '判定', '正しくは'],
-    voice.log.map((l) => [l.time, l.start, l.raw, l.result, l.ok === true ? '○' : l.ok === false ? '×' : '', l.correct]));
+    ['時刻', '開始位置', '聞き取った言葉', '入力した内容', '判定', '正しくは', '途中の様子'],
+    voice.log.map((l) => [l.time, l.start, l.raw, l.result, l.ok === true ? '○' : l.ok === false ? '×' : '', l.correct, l.info || '']));
   $('#vlogClear').onclick = async () => {
     const ok = await askConfirm(`聞き取りの記録（${voice.log.length}件）をすべて消しますか？\n必要なら、先に「記録を書き出す」で保存してください。`, '消す', true);
     if (ok) { voice.log = []; await saveVoiceLog(); }
@@ -1132,7 +1168,12 @@ function voiceStart() {
   };
   // 無音が続くと止まることがあるので、聞き取り中は自動で再開する
   r.onend = () => {
-    if (voice.prov && voice.rec === r) voiceFinal(voice.prov.text); // 確定が届かないまま止まったときは、仮入力をそのまま確定する
+    // 確定が届かないまま止まったときは、仮入力（なければ途中まで聞き取った言葉）をそのまま確定する
+    if (voice.rec === r && !voice.discard) {
+      if (voice.prov) voiceFinal(voice.prov.text);
+      else if ((voice.interim || '').trim()) voiceFinal(voice.interim);
+    }
+    voice.interim = '';
     voice.discard = false;
     if (voice.paused) { if (voice.pauseDone) voice.pauseDone(); return; }
     if (voice.on && voice.rec === r) setTimeout(() => { if (voice.on && voice.rec === r && !voice.paused) try { r.start(); } catch { /* 再開済み */ } }, 250);
@@ -1149,7 +1190,8 @@ function voiceStart() {
   if (guideOn('start')) guide([{ tone: 'chime', text: startText() }]);
 }
 function voiceStop(silent = false) {
-  clearTimeout(voice.timer);
+  clearTimeout(voice.timer); clearTimeout(voice.silTimer);
+  voice.cutReason = '停止ボタン';
   guideQ.length = 0;
   voice.paused = false; voice.speaking = '';
   try { if (window.speechSynthesis) speechSynthesis.cancel(); } catch { /* なし */ }
@@ -1300,9 +1342,10 @@ function ppdCue() {
 }
 // エリアの最後まで入ったら、聞き取りを一度止めて確定させる（iPadは止めると、そこまでの言葉を確定して届ける）。
 // 1回の発話を短くして、聞き直しによる書き換えや反応の遅れを防ぐ。確定のあとの案内（「次、左上頬側」）が終わると再開する
-function cutRec() {
+function cutRec(reason = '') {
   const r = voice.rec;
   if (!r || !voice.on || voice.paused) return;
+  if (reason) voice.cutReason = reason;
   try { r.stop(); } catch { /* 停止済み */ }
 }
 const ECHO_MAX = 6; // 復唱するのは、入れた数が多くないときだけ（長い読み上げのあいだは聞き取れないため）
@@ -1553,7 +1596,7 @@ function handleBopSpeech(raw, provisional, dry) {
   };
   const apply = (poss) => {
     // 文の頭が部位の言葉なら、直前の文で付けた歯の続き（「7 遠心」で確定したあとの「近心」）
-    if (!teeth.length && !sawTooth && voice.bopTooth && Math.floor(voice.bopTooth / 10) === ctx.q) teeth = [voice.bopTooth];
+    if (!teeth.length && !sawTooth && voice.bopTooth && Math.floor(voice.bopTooth / 10) === ctx.q && !T[voice.bopTooth].missing) teeth = [voice.bopTooth];
     if (!teeth.length) { done.push('歯の番号が聞き取れませんでした。入力していません'); return; }
     voice.bopTooth = teeth[teeth.length - 1];
     const hit = [];
@@ -1617,6 +1660,8 @@ function handleBopSpeech(raw, provisional, dry) {
     else if (tk.type === 'undo') undoLast();
     else if (tk.type === 'stop') { if (!dry) voiceStop(); }
   }
+  // 文の最後が歯の番号だけ（「7」で区切られた）なら、警告せずにその歯を覚えて、次の文の「遠心」などに使う
+  if (teeth.length === 1 && !posSeen) { voice.bopTooth = teeth[0]; done.push(`${toothName(teeth[0])}：部位をどうぞ`); teeth = []; }
   dropPending();
   // 歯と部位を言い終えたら（最後の言葉が部位・全部・マイナスなど）、またはエリアを変えたら、その場で文を確定させる（ポケットの部位指定と同じ）
   const lt = toks[toks.length - 1];
@@ -1787,6 +1832,8 @@ function handleSpeech(raw, provisional = false, dry = false) {
   const lastTok = toks[toks.length - 1];
   voice.jumped = moved || fixes.length > 0;
   if (provisional && fixes.length && lastTok && (lastTok.type === 'num' || lastTok.type === 'flag')) voice.specCut = true;
+  // 聞き取れなかった言葉があり、文が言い終わっている（最後が数字やプラス）ときも、その場で区切って言い直しを待つ
+  if (provisional && lastTok && (lastTok.type === 'num' || lastTok.type === 'flag') && done.some((d) => failSpeech(d))) voice.junkCut = true;
   voice.lastGuide = ppdGuide(cur0, ed.cur, ops, done, complete0, ppdComplete(), moved && !ops.length, moved);
   if (fixes.length && guideOn('enabled')) voice.lastGuide.unshift({ text: fixes.join('、') });
   if (undone && !ops.length && guideOn('enabled')) { // 取り消したら、どこから言い直すかを伝える
@@ -2133,9 +2180,13 @@ function guideSettingsHTML() {
         ${[['normal', 'ふつう'], ['mid', '少し速い'], ['fast', '速い']].map(([v, l]) => `<label class="mini"><input type="radio" name="grate" value="${v}" ${g.rate === v ? 'checked' : ''}> ${l}</label>`).join('')}
         <button class="btn" id="gtest">試しに聞く</button></div></div>
     </section>
-    <section class="card"><h2>声・スイッチでの操作</h2>${OP_ITEMS.map((it) => sw(it, false)).join('')}</section>`;
+    <section class="card"><h2>声・スイッチでの操作</h2>${OP_ITEMS.map((it) => sw(it, false)).join('')}
+      <div class="swgroup"><div class="swh">黙ったら区切る</div>
+        <p class="sub">話の途中で、この時間だけ黙ったら、そこまでの言葉を確定します（仮入力が出ないまま、まとめて入るのを防ぐ）。区切ったあとの再開に0.3〜1秒かかるので、短すぎると話し始めの言葉が抜けることがあります。</p>
+        <div class="row-tools">${[[0, 'しない'], [0.7, '0.7秒'], [1, '1秒'], [1.5, '1.5秒'], [2, '2秒']].map(([v, l]) => `<label class="mini"><input type="radio" name="csil" value="${v}" ${silenceSec() === v ? 'checked' : ''}> ${l}</label>`).join('')}</div></div></section>`;
 }
 function bindGuideSettings() {
+  document.querySelectorAll('input[name=csil]').forEach((r) => (r.onchange = () => { settings.cutSilence = Number(r.value); saveSettings(); }));
   document.querySelectorAll('[data-g]').forEach((c) => (c.onchange = async () => {
     settings.guide[c.dataset.g] = c.checked;
     await saveSettings();
