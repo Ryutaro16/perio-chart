@@ -1,0 +1,1252 @@
+'use strict';
+
+/* ================= 基本 ================= */
+const $ = (s, el = document) => el.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
+const pad2 = (n) => String(n).padStart(2, '0');
+const today = () => { const d = new Date(); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; };
+const fmtDate = (s) => (s ? s.replace(/-/g, '/') : '');
+const fmtPct = (v) => (v == null ? '—' : Math.round(v) + '%');
+function ageAt(birth, date) {
+  if (!birth) return null;
+  const [by, bm, bd] = birth.split('-').map(Number);
+  const [y, m, d] = (date || today()).split('-').map(Number);
+  return y - by - (m < bm || (m === bm && d < bd) ? 1 : 0);
+}
+
+/* ================= 歯の定義 ================= */
+// 画面の左→右（患者の右→左）
+const UPPER = [18, 17, 16, 15, 14, 13, 12, 11, 21, 22, 23, 24, 25, 26, 27, 28];
+const LOWER = [48, 47, 46, 45, 44, 43, 42, 41, 31, 32, 33, 34, 35, 36, 37, 38];
+const ALL = [...UPPER, ...LOWER];
+const SITES = ['bd', 'bc', 'bm', 'ld', 'lc', 'lm'];
+const PL = ['m', 'd', 'b', 'l'];
+const quad = (t) => Math.floor(t / 10);
+const isUpper = (t) => quad(t) <= 2;
+const isPtRight = (t) => quad(t) === 1 || quad(t) === 4;
+const isMid = (t) => t === 21 || t === 31;
+const isMolar = (t) => t % 10 >= 6;
+const toothName = (t) => ({ 1: '右上', 2: '左上', 3: '左下', 4: '右下' })[quad(t)] + (t % 10);
+const sideName = (t, side) => (side === 'b' ? '頬側' : isUpper(t) ? '口蓋側' : '舌側');
+const POS = { d: '遠心', c: '中央', m: '近心' };
+const siteName = (t, k) => `${toothName(t)}　${sideName(t, k[0])} ${POS[k[1]]}`;
+// 画面の左→右の順に並べた部位キー
+const screenKeys = (t, side) => (isPtRight(t) ? [side + 'd', side + 'c', side + 'm'] : [side + 'm', side + 'c', side + 'd']);
+
+// 根分岐部：上顎大臼歯＝頬側・近心口蓋・遠心口蓋、下顎大臼歯＝頬側・舌側
+const FURC_NAME = { b: '頬側', mp: '近心口蓋', dp: '遠心口蓋', l: '舌側' };
+const ROMAN = { 1: 'Ⅰ', 2: 'Ⅱ', 3: 'Ⅲ' };
+const furcKeys = (t) => (isUpper(t) ? ['b', 'mp', 'dp'] : ['b', 'l']);
+function furcAt(t, side, pos) {
+  if (!isMolar(t)) return null;
+  if (side === 'b') return pos === 'c' ? 'b' : null;
+  if (isUpper(t)) return pos === 'm' ? 'mp' : pos === 'd' ? 'dp' : null;
+  return pos === 'c' ? 'l' : null;
+}
+
+/* ================= 測定順 ================= */
+const ORDERS = {
+  z: {
+    label: '上顎を頬側→口蓋側、次に下顎を頬側→舌側',
+    desc: '上顎頬側 右上→左上 → 上顎口蓋側 左上→右上 → 下顎頬側 左下→右下 → 下顎舌側 右下→左下',
+    segs: [['b', UPPER, 1], ['l', UPPER, -1], ['b', LOWER, -1], ['l', LOWER, 1]],
+  },
+  loop: {
+    label: '頬側を一周 → 舌側を一周',
+    desc: '上顎頬側 右上→左上 → 下顎頬側 左下→右下 → 下顎舌側 右下→左下 → 上顎口蓋側 左上→右上（一筆書き）',
+    segs: [['b', UPPER, 1], ['b', LOWER, -1], ['l', LOWER, 1], ['l', UPPER, -1]],
+  },
+};
+function buildSeq(order) {
+  const seq = [];
+  for (const [side, row, dir] of (ORDERS[order] || ORDERS.z).segs) {
+    for (const t of dir > 0 ? row : [...row].reverse()) {
+      const keys = screenKeys(t, side);
+      for (const k of dir > 0 ? keys : [...keys].reverse()) seq.push({ t, k });
+    }
+  }
+  return seq;
+}
+const MOB_SEQ = [...UPPER, ...[...LOWER].reverse()];
+const FURC_SEQ = MOB_SEQ.filter(isMolar).flatMap((t) => furcKeys(t).map((f) => ({ t, f })));
+
+/* ================= データベース（IndexedDB） ================= */
+const DB = {
+  db: null,
+  open() {
+    return new Promise((res, rej) => {
+      const r = indexedDB.open('perio-chart', 1);
+      r.onupgradeneeded = () => {
+        const d = r.result;
+        d.createObjectStore('patients', { keyPath: 'id' });
+        d.createObjectStore('exams', { keyPath: 'id' }).createIndex('patientId', 'patientId');
+        d.createObjectStore('settings', { keyPath: 'key' });
+      };
+      r.onsuccess = () => { this.db = r.result; res(); };
+      r.onerror = () => rej(r.error);
+    });
+  },
+  store(name, mode = 'readonly') { return this.db.transaction(name, mode).objectStore(name); },
+  req(r) { return new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); },
+  all(name) { return this.req(this.store(name).getAll()); },
+  get(name, key) { return this.req(this.store(name).get(key)); },
+  put(name, val) { return this.req(this.store(name, 'readwrite').put(val)); },
+  byPatient(pid) { return this.req(this.store('exams').index('patientId').getAll(pid)); },
+};
+
+let settings = { key: 'settings', clinicName: '', order: 'z', lastBackupAt: null, lastExaminer: '' };
+async function loadSettings() { const s = await DB.get('settings', 'settings'); if (s) settings = { ...settings, ...s }; }
+const saveSettings = () => DB.put('settings', settings);
+
+/* ================= 検査データ ================= */
+const blankTooth = () => ({ missing: false, mob: null, ppd: {}, bop: {}, pus: {}, pl: {}, fur: {} });
+function newExam(patientId, date, examiner, prev, carryOver = false) {
+  const teeth = {};
+  const carry = { ppd: {}, bop: {}, pus: {}, mob: {}, fur: {}, pl: {} };
+  for (const t of ALL) {
+    teeth[t] = blankTooth();
+    const pt = prev && prev.teeth[t];
+    if (!pt) continue;
+    if (pt.missing) { teeth[t].missing = true; continue; }
+    if (!carryOver) continue;
+    // 前回の値を写し、「引き継ぎ（未確定）」の印を付ける
+    const th = teeth[t];
+    for (const k of SITES) {
+      if (pt.ppd[k] != null) { th.ppd[k] = pt.ppd[k]; carry.ppd[ck(t, k)] = true; }
+      if (pt.bop[k]) { th.bop[k] = true; carry.bop[ck(t, k)] = true; }
+      if (pt.pus[k]) { th.pus[k] = true; carry.pus[ck(t, k)] = true; }
+    }
+    if (pt.mob != null) { th.mob = pt.mob; carry.mob[ck(t)] = true; }
+    for (const [f, v] of Object.entries(pt.fur || {})) if (v != null) { th.fur[f] = v; carry.fur[ck(t, f)] = true; }
+    for (const f of PL) if (pt.pl[f]) { th.pl[f] = true; carry.pl[ck(t, f)] = true; }
+  }
+  return {
+    id: uid(), patientId, date, examiner, note: '', teeth, pcrNone: false, carry, carriedFrom: carryOver && prev ? prev.date : null,
+    createdAt: Date.now(), updatedAt: Date.now(), deletedAt: null,
+  };
+}
+
+// 前回から引き継いで、まだ確定していない値の印（exam.carry[種類]['歯:部位'] = true）
+const CARRY_TYPES = ['ppd', 'bop', 'pus', 'mob', 'fur', 'pl'];
+const ck = (t, k = '') => `${t}:${k}`;
+const isCarried = (ex, type, t, k = '') => !!(ex.carry && ex.carry[type] && ex.carry[type][ck(t, k)]);
+function unCarry(ex, type, t, k = '') { if (ex.carry && ex.carry[type]) delete ex.carry[type][ck(t, k)]; }
+function carriedCount(ex, types = CARRY_TYPES) {
+  if (!ex.carry) return 0;
+  let n = 0;
+  for (const ty of types) for (const key of Object.keys(ex.carry[ty] || {})) if (!ex.teeth[Number(key.split(':')[0])].missing) n++;
+  return n;
+}
+
+// 旧データ（pcrDone）にも対応
+const plaqueNone = (ex) => (ex.pcrNone !== undefined ? ex.pcrNone : !!ex.pcrDone);
+const hasPlaque = (ex) => ALL.some((t) => Object.values(ex.teeth[t].pl).some(Boolean));
+
+function calcStats(ex) {
+  let present = 0, sites = 0, sum = 0, ge4 = 0, ge6 = 0, bop = 0, pl = 0, furT = 0;
+  for (const t of ALL) {
+    const th = ex.teeth[t];
+    if (th.missing) continue;
+    present++;
+    for (const k of SITES) {
+      const v = th.ppd[k];
+      if (v == null) continue;
+      sites++; sum += v;
+      if (v >= 4) ge4++;
+      if (v >= 6) ge6++;
+      if (th.bop[k]) bop++;
+    }
+    for (const s of PL) if (th.pl[s]) pl++;
+    if (Object.values(th.fur || {}).some((v) => v > 0)) furT++;
+  }
+  return {
+    present, sites,
+    mean: sites ? sum / sites : null,
+    ge4pct: sites ? (ge4 / sites) * 100 : null,
+    ge6: sites ? ge6 : null,
+    boppct: sites ? (bop / sites) * 100 : null,
+    // プラークが1面でもあれば計算。0面のときは「付着なし」を押した場合だけ0%、それ以外は未検査（—）
+    pcr: present && (pl > 0 || plaqueNone(ex)) ? (pl / (present * 4)) * 100 : null,
+    furT,
+  };
+}
+function statsHTML(s) {
+  return `<span>現在歯数 <b>${s.present}</b></span>
+    <span>測定部位 <b>${s.sites}</b> / ${s.present * 6}</span>
+    <span>平均PPD <b>${s.mean == null ? '—' : s.mean.toFixed(1)}</b>${s.mean == null ? '' : 'mm'}</span>
+    <span>4mm以上 <b>${fmtPct(s.ge4pct)}</b></span>
+    <span>6mm以上 <b>${s.ge6 == null ? '—' : s.ge6}</b>部位</span>
+    <span>BOP <b>${fmtPct(s.boppct)}</b></span>
+    <span>PCR <b>${fmtPct(s.pcr)}</b></span>
+    <span>分岐部病変 <b>${s.furT}</b>歯</span>`;
+}
+
+/* ================= チャート描画 ================= */
+function pcrSVG(t, th, ex) {
+  const up = isUpper(t), r = isPtRight(t);
+  const map = { top: up ? 'b' : 'l', bottom: up ? 'l' : 'b', left: r ? 'd' : 'm', right: r ? 'm' : 'd' };
+  const pts = { top: '0,0 30,0 15,15', bottom: '0,30 30,30 15,15', left: '0,0 0,30 15,15', right: '30,0 30,30 15,15' };
+  return `<svg class="pcrsvg" viewBox="0 0 30 30">${Object.keys(pts).map((p) => {
+    const s = map[p];
+    return `<polygon points="${pts[p]}" data-t="${t}" data-surf="${s}" class="${th.pl[s] ? 'on' : ''}${ex && isCarried(ex, 'pl', t, s) ? ' c' : ''}"/>`;
+  }).join('')}</svg>`;
+}
+
+function chartHTML(exam, o = {}) {
+  const T = exam.teeth;
+  // 引き継いだ値の薄い表示は画面だけ。印刷（o.print）では通常の濃さにする
+  const carried = (type, t, k) => !o.print && isCarried(exam, type, t, k);
+  const subCells = (row, side, cls, cell) => row.map((t) => screenKeys(t, side).map((k, i) => {
+    const c = [cls];
+    if (i === 0) c.push('tl');
+    if (i === 0 && isMid(t)) c.push('mid');
+    if (T[t].missing) { c.push('miss'); return `<td class="${c.join(' ')}"></td>`; }
+    return cell(t, T[t], k, c);
+  }).join('')).join('');
+
+  const ppdRow = (row, side, label) => `<tr><th class="lab">${label}</th>${subCells(row, side, 's', (t, th, k, c) => {
+    const v = th.ppd[k];
+    if (v >= 6) c.push('p6'); else if (v >= 4) c.push('p4');
+    if (o.cursor && o.cursor.t === t && o.cursor.k === k) c.push('cur');
+    if (carried('ppd', t, k)) c.push('c');
+    const dot = (type) => (th[type][k] ? `<i class="${type}${carried(type, t, k) ? ' c' : ''}"></i>` : '');
+    return `<td class="${c.join(' ')}" data-t="${t}" data-k="${k}">${v ?? ''}${dot('bop')}${dot('pus')}</td>`;
+  })}</tr>`;
+
+  const furRow = (row, side) => `<tr><th class="lab">分岐部</th>${subCells(row, side, 'f', (t, th, k, c) => {
+    const f = furcAt(t, side, k[1]);
+    if (!f) { c.push('fx'); return `<td class="${c.join(' ')}"></td>`; }
+    const v = (th.fur || {})[f];
+    if (v) c.push('on');
+    if (o.furCursor && o.furCursor.t === t && o.furCursor.f === f) c.push('cur');
+    if (carried('fur', t, f)) c.push('c');
+    return `<td class="${c.join(' ')}" data-t="${t}" data-f="${f}">${v ? ROMAN[v] : ''}</td>`;
+  })}</tr>`;
+
+  const toothRow = (row, cls, label, cell) => `<tr><th class="lab">${label}</th>${row.map((t) => {
+    const th = T[t];
+    const c = [cls];
+    if (isMid(t)) c.push('mid');
+    if (th.missing) c.push('miss');
+    const [inner, attrs] = cell(t, th, c);
+    return `<td colspan="3" class="${c.join(' ')}" ${attrs}>${inner}</td>`;
+  }).join('')}</tr>`;
+  const numRow = (row, label) => toothRow(row, 'num', label, (t) => [String(t % 10), `data-tooth="${t}"`]);
+  const mobRow = (row) => toothRow(row, 'mob', '動揺度', (t, th, c) => {
+    if (th.missing) return ['', ''];
+    if (o.mobCursor === t) c.push('cur');
+    if (carried('mob', t)) c.push('c');
+    return [th.mob ?? '', `data-mob="${t}"`];
+  });
+  const pcrRow = (row) => toothRow(row, 'pcr', 'プラーク', (t, th) => (th.missing ? ['', ''] : [pcrSVG(t, th, o.print ? null : exam), '']));
+
+  return `<table class="chart"><colgroup><col class="labc">${'<col>'.repeat(48)}</colgroup>
+    ${pcrRow(UPPER)}${mobRow(UPPER)}${furRow(UPPER, 'b')}${ppdRow(UPPER, 'b', '頬側')}${numRow(UPPER, '上顎')}${ppdRow(UPPER, 'l', '口蓋側')}${furRow(UPPER, 'l')}
+    <tr class="gap"><td colspan="49"></td></tr>
+    ${furRow(LOWER, 'l')}${ppdRow(LOWER, 'l', '舌側')}${numRow(LOWER, '下顎')}${ppdRow(LOWER, 'b', '頬側')}${furRow(LOWER, 'b')}${mobRow(LOWER)}${pcrRow(LOWER)}
+  </table>`;
+}
+
+/* ================= 画面共通 ================= */
+const app = () => $('#app');
+let view = { name: 'list' };
+function openDialog(html) {
+  const d = $('#dlg');
+  d.onclose = null;
+  d.innerHTML = html;
+  d.querySelectorAll('[data-close]').forEach((b) => (b.onclick = closeDialog));
+  if (!d.open) d.showModal();
+}
+function closeDialog() { const d = $('#dlg'); if (d.open) d.close(); }
+// ブラウザ標準の confirm/alert は環境によって表示されないため、アプリ内の画面で聞く
+function askConfirm(msg, okLabel = 'OK', danger = false) {
+  return new Promise((resolve) => {
+    openDialog(`<div class="dlg-body"><p class="dlg-msg">${esc(msg).replace(/\n/g, '<br>')}</p>
+      <div class="dlg-actions"><button class="btn" data-ans="0">キャンセル</button>
+      <button class="btn ${danger ? 'danger-fill' : 'primary'}" data-ans="1">${esc(okLabel)}</button></div></div>`);
+    const d = $('#dlg');
+    d.onclose = () => resolve(false);
+    d.querySelectorAll('[data-ans]').forEach((b) => (b.onclick = () => { d.onclose = null; closeDialog(); resolve(b.dataset.ans === '1'); }));
+  });
+}
+function notify(msg) {
+  return new Promise((resolve) => {
+    openDialog(`<div class="dlg-body"><p class="dlg-msg">${esc(msg).replace(/\n/g, '<br>')}</p>
+      <div class="dlg-actions"><button class="btn primary" data-ok>OK</button></div></div>`);
+    const d = $('#dlg');
+    d.onclose = () => resolve();
+    $('[data-ok]', d).onclick = closeDialog;
+  });
+}
+
+document.addEventListener('click', (e) => {
+  const g = e.target.closest('[data-go]');
+  if (g) { if (g.dataset.go === 'list') showList(); else if (g.dataset.go === 'settings') showSettings(); return; }
+  if (e.target.closest('[data-act="backup"]')) exportBackup();
+});
+
+function backupBanner(n) {
+  if (!n) return '';
+  const last = settings.lastBackupAt;
+  const days = last ? Math.floor((Date.now() - last) / 86400000) : null;
+  if (days !== null && days < 7) return '';
+  return `<div class="banner">${days === null ? 'まだバックアップがありません。' : `最後のバックアップから${days}日経っています。`}
+    iPadの故障・紛失に備えて、院内PCへ保存してください。<button class="btn" data-act="backup">今すぐバックアップ</button></div>`;
+}
+
+/* ================= 患者一覧 ================= */
+async function showList() {
+  view = { name: 'list' };
+  const [patients, exams] = await Promise.all([DB.all('patients'), DB.all('exams')]);
+  const info = {};
+  for (const e of exams) {
+    if (e.deletedAt) continue;
+    const i = (info[e.patientId] ||= { n: 0, last: '' });
+    i.n++;
+    if (e.date > i.last) i.last = e.date;
+  }
+  patients.sort((a, b) => (a.kana || a.name).localeCompare(b.kana || b.name, 'ja'));
+  app().innerHTML = `
+    <header class="bar"><h1>ペリオチャート</h1><div class="grow"></div><button class="btn ghost" data-go="settings">設定・バックアップ</button></header>
+    <main class="wrap">
+      ${backupBanner(patients.length)}
+      <div class="row-tools">
+        <input id="q" class="search" type="search" placeholder="氏名・ふりがな・カルテ番号で検索" autocomplete="off">
+        <button class="btn primary big" id="addp">＋ 新規患者</button>
+      </div>
+      <div class="card list" id="plist"></div>
+    </main>`;
+  const draw = () => {
+    const q = $('#q').value.trim().toLowerCase();
+    const rows = patients.filter((p) => !q || [p.name, p.kana, p.chartNo].some((v) => (v || '').toLowerCase().includes(q)));
+    $('#plist').innerHTML = rows.length
+      ? rows.map((p) => {
+        const i = info[p.id] || { n: 0, last: '' };
+        return `<button class="prow" data-pid="${p.id}"><span class="cno">${esc(p.chartNo || '—')}</span>
+          <span class="pname">${esc(p.name)}<small>${esc(p.kana || '')}</small></span>
+          <span class="pmeta">${i.n ? `最終検査 ${fmtDate(i.last)}・${i.n}回` : '検査なし'}</span><span class="chev">›</span></button>`;
+      }).join('')
+      : `<p class="empty">${patients.length ? '該当する患者がいません' : 'まだ患者が登録されていません。「＋ 新規患者」から登録してください。'}</p>`;
+  };
+  draw();
+  $('#q').addEventListener('input', draw);
+  $('#addp').onclick = () => patientDialog(null, (p) => showPatient(p.id));
+  $('#plist').onclick = (e) => { const b = e.target.closest('[data-pid]'); if (b) showPatient(b.dataset.pid); };
+}
+
+function patientDialog(p, onSaved) {
+  const isNew = !p;
+  p = p ? { ...p } : { id: uid(), chartNo: '', name: '', kana: '', birth: '', note: '', createdAt: Date.now() };
+  openDialog(`<form class="dlg-body" id="pf"><h2>${isNew ? '新規患者' : '患者情報の編集'}</h2>
+    <label class="field"><span>カルテ番号</span><input name="chartNo" value="${esc(p.chartNo)}" inputmode="numeric" autocomplete="off"></label>
+    <label class="field"><span>氏名 <em>必須</em></span><input name="name" value="${esc(p.name)}" required autocomplete="off"></label>
+    <label class="field"><span>ふりがな</span><input name="kana" value="${esc(p.kana)}" autocomplete="off"></label>
+    <label class="field"><span>生年月日</span><input name="birth" type="date" value="${esc(p.birth)}"></label>
+    <label class="field"><span>メモ</span><input name="note" value="${esc(p.note)}" autocomplete="off"></label>
+    <div class="dlg-actions"><button type="button" class="btn" data-close>キャンセル</button><button class="btn primary" type="submit">保存</button></div></form>`);
+  $('#pf').onsubmit = async (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    for (const k of ['chartNo', 'name', 'kana', 'birth', 'note']) p[k] = (f.get(k) || '').trim();
+    if (!p.name) return;
+    p.updatedAt = Date.now();
+    await DB.put('patients', p);
+    closeDialog();
+    onSaved(p);
+  };
+}
+
+/* ================= 患者ごとの検査一覧（時系列） ================= */
+async function showPatient(pid, showDeleted = false) {
+  const p = await DB.get('patients', pid);
+  if (!p) return showList();
+  view = { name: 'patient', pid, showDeleted };
+  const exams = (await DB.byPatient(pid)).sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt);
+  const live = exams.filter((e) => !e.deletedAt), dead = exams.filter((e) => e.deletedAt);
+  const rows = (showDeleted ? dead : live).map((e) => {
+    const s = calcStats(e);
+    return `<tr><td class="d">${fmtDate(e.date)}</td><td>${s.present}</td><td>${s.mean == null ? '—' : s.mean.toFixed(1)}</td>
+      <td>${fmtPct(s.ge4pct)}</td><td>${s.ge6 == null ? '—' : s.ge6}</td><td>${fmtPct(s.boppct)}</td><td>${fmtPct(s.pcr)}</td><td>${s.furT}</td>
+      <td>${esc(e.examiner || '')}</td>
+      <td class="acts">${showDeleted
+        ? `<button class="btn" data-restore="${e.id}">元に戻す</button>`
+        : `<button class="btn primary" data-open="${e.id}">開く</button><button class="btn" data-print="${e.id}">印刷</button><button class="btn danger" data-del="${e.id}">削除</button>`}</td></tr>`;
+  }).join('');
+  app().innerHTML = `
+    <header class="bar"><button class="btn ghost" data-go="list">‹ 患者一覧</button><div class="grow"></div><button class="btn" id="editp">患者情報を編集</button></header>
+    <main class="wrap">
+      <div class="card pinfo"><div class="pn">${esc(p.name)} <small>様</small></div><div class="pk">${esc(p.kana || '')}</div>
+        <dl><div><dt>カルテ番号</dt><dd>${esc(p.chartNo || '—')}</dd></div>
+        <div><dt>生年月日</dt><dd>${p.birth ? `${fmtDate(p.birth)}（${ageAt(p.birth)}歳）` : '—'}</dd></div>
+        ${p.note ? `<div><dt>メモ</dt><dd>${esc(p.note)}</dd></div>` : ''}</dl></div>
+      <div class="row-tools"><h2>${showDeleted ? '削除した検査' : '検査の記録（新しい順）'}</h2><div class="grow"></div>
+        ${showDeleted ? '<button class="btn" id="tglDel">‹ 検査の記録に戻る</button>' : '<button class="btn primary big" id="newx">＋ 新しい検査を始める</button>'}</div>
+      <div class="card tablewrap">${rows
+        ? `<table class="xt"><thead><tr><th>検査日</th><th>現在歯数</th><th>平均PPD</th><th>4mm以上</th><th>6mm以上</th><th>BOP</th><th>PCR</th><th>分岐部</th><th>検査者</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
+        : `<p class="empty">${showDeleted ? '削除した検査はありません。' : 'まだ検査がありません。「＋ 新しい検査を始める」から入力してください。'}</p>`}</div>
+      ${!showDeleted && dead.length ? `<p><button class="btn ghost" id="tglDel">削除した検査（${dead.length}件）を表示</button></p>` : ''}
+    </main>`;
+  $('#editp').onclick = () => patientDialog(p, () => showPatient(pid));
+  if ($('#newx')) $('#newx').onclick = () => newExamDialog(p, live[0]);
+  if ($('#tglDel')) $('#tglDel').onclick = () => showPatient(pid, !showDeleted);
+  $('main').onclick = async (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    const find = (id) => exams.find((x) => x.id === id);
+    if (b.dataset.open) openEditor(b.dataset.open);
+    else if (b.dataset.print) await printExam(p, find(b.dataset.print));
+    else if (b.dataset.del) {
+      const ex = find(b.dataset.del);
+      if (!(await askConfirm(`${fmtDate(ex.date)} の検査を削除しますか？\n（「削除した検査」からいつでも元に戻せます）`, '削除する', true))) return;
+      ex.deletedAt = Date.now();
+      await DB.put('exams', ex);
+      showPatient(pid);
+    } else if (b.dataset.restore) {
+      const ex = find(b.dataset.restore);
+      ex.deletedAt = null;
+      await DB.put('exams', ex);
+      showPatient(pid, true);
+    }
+  };
+}
+
+function newExamDialog(p, prev) {
+  openDialog(`<form class="dlg-body" id="nf"><h2>新しい検査</h2>
+    <label class="field"><span>検査日</span><input type="date" name="date" value="${today()}" required></label>
+    <label class="field"><span>検査者</span><input name="examiner" value="${esc(settings.lastExaminer)}" autocomplete="off"></label>
+    ${prev ? `<label class="check"><input type="checkbox" name="carry"><span>前回（${fmtDate(prev.date)}）のデータを引き継ぐ
+        <small>ポケット・出血・排膿・動揺度・分岐部・プラーク。引き継いだ値は薄い色で表示され、確定するまで「未確定」になります</small></span></label>
+      <p class="hint">欠損歯は前回から自動で引き継ぎます。</p>` : ''}
+    <div class="dlg-actions"><button type="button" class="btn" data-close>キャンセル</button><button class="btn primary">入力を始める</button></div></form>`);
+  $('#nf').onsubmit = async (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const ex = newExam(p.id, f.get('date') || today(), (f.get('examiner') || '').trim(), prev, f.get('carry') === 'on');
+    settings.lastExaminer = ex.examiner;
+    await saveSettings();
+    await DB.put('exams', ex);
+    closeDialog();
+    openEditor(ex.id);
+  };
+}
+
+/* ================= 入力画面 ================= */
+const ed = {
+  exam: null, patient: null, mode: 'ppd', cur: 0, mob: 0, fur: 0, seq: [], saveTimer: null,
+  plRange: 'all', plFaces: new Set(), // プラーク一括入力の選択
+  flash: '', undo: null, // 直前の一括操作のお知らせと取り消し用データ
+  bulkVal: 3, // 「空欄を全部◯に」の数字（開くたびに3から）
+  mobBulk: 0, // 動揺度の一括入力の数字（開くたびに0から）
+};
+const PL_RANGES = [['all', '全顎'], ['1', '右上'], ['2', '左上'], ['3', '左下'], ['4', '右下']];
+const PL_FACES = [['m', '近心'], ['d', '遠心'], ['b', '頬側'], ['l', '舌側・口蓋側']];
+const MODES = [['ppd', 'ポケット'], ['mob', '動揺度'], ['fur', '分岐部'], ['pcr', 'プラーク']];
+
+function nextOpen(list, i, dir, toothOf) {
+  for (let j = i + dir; j >= 0 && j < list.length; j += dir) if (!ed.exam.teeth[toothOf(list[j])].missing) return j;
+  return i;
+}
+const stepPPD = (dir) => nextOpen(ed.seq, ed.cur, dir, (s) => s.t);
+const stepMob = (dir) => nextOpen(MOB_SEQ, ed.mob, dir, (t) => t);
+const stepFur = (dir) => nextOpen(FURC_SEQ, ed.fur, dir, (s) => s.t);
+function firstEmpty(list, toothOf, isEmpty) {
+  const T = ed.exam.teeth;
+  let i = list.findIndex((x) => !T[toothOf(x)].missing && isEmpty(x));
+  if (i < 0) i = list.findIndex((x) => !T[toothOf(x)].missing);
+  return Math.max(i, 0);
+}
+const ppdComplete = () => ed.seq.every((s) => ed.exam.teeth[s.t].missing || (ed.exam.teeth[s.t].ppd[s.k] != null && !isCarried(ed.exam, 'ppd', s.t, s.k)));
+
+async function openEditor(examId) {
+  const exam = await DB.get('exams', examId);
+  const patient = await DB.get('patients', exam.patientId);
+  view = { name: 'editor', examId };
+  voiceStop(true);
+  for (const t of ALL) exam.teeth[t].fur ||= {};
+  if (exam.pcrNone === undefined) { exam.pcrNone = !!exam.pcrDone && !hasPlaque(exam); delete exam.pcrDone; }
+  Object.assign(ed, { exam, patient, mode: 'ppd', seq: buildSeq(settings.order), flash: '', undo: null, bulkVal: 3, mobBulk: 0 });
+  ed.cur = firstEmpty(ed.seq, (s) => s.t, (s) => exam.teeth[s.t].ppd[s.k] == null);
+  ed.mob = firstEmpty(MOB_SEQ, (t) => t, (t) => exam.teeth[t].mob == null);
+  ed.fur = firstEmpty(FURC_SEQ, (s) => s.t, (s) => exam.teeth[s.t].fur[s.f] == null);
+  app().innerHTML = `<div class="editor">
+    <header class="bar">
+      <button class="btn ghost" id="back">‹ ${esc(patient.name)} 様</button>
+      <label class="mini">検査日 <input type="date" id="exdate" value="${esc(exam.date)}"></label>
+      <label class="mini">検査者 <input id="exby" value="${esc(exam.examiner || '')}" autocomplete="off"></label>
+      <div class="grow"></div>
+      <span id="savest" class="savest">保存済み</span>
+      <button class="btn mic" id="mic">🎤 音声入力</button>
+      <button class="btn" id="prt">印刷</button>
+      <button class="btn primary" id="done">完了</button>
+    </header>
+    <div class="ed-main"><div id="stats" class="stats"></div><div id="chart"></div></div>
+    <div class="voicebar" id="voicebar" hidden></div>
+    <div class="pad" id="pad"></div>
+  </div>`;
+  const leave = async () => { voiceStop(true); await flushSave(); showPatient(patient.id); };
+  $('#mic').onclick = voiceToggle;
+  $('#back').onclick = leave;
+  $('#done').onclick = leave;
+  $('#prt').onclick = async () => { await flushSave(); await printExam(patient, exam); };
+  $('#exdate').onchange = (e) => { if (e.target.value) { exam.date = e.target.value; touch(false); } };
+  $('#exby').oninput = (e) => { exam.examiner = e.target.value.trim(); touch(false); };
+  $('#chart').onclick = onChartTap;
+  $('#pad').onclick = onPadTap;
+  refresh();
+}
+
+function refresh() {
+  const m = ed.mode;
+  $('#chart').innerHTML = chartHTML(ed.exam, {
+    cursor: m === 'ppd' ? ed.seq[ed.cur] : null,
+    mobCursor: m === 'mob' ? MOB_SEQ[ed.mob] : null,
+    furCursor: m === 'fur' ? FURC_SEQ[ed.fur] : null,
+  });
+  $('#stats').innerHTML = statsHTML(calcStats(ed.exam));
+  $('#pad').innerHTML = padHTML();
+  ed.flash = '';
+}
+
+function touch(redraw = true) {
+  ed.exam.updatedAt = Date.now();
+  const s = $('#savest');
+  if (s) { s.textContent = '保存中…'; s.classList.add('busy'); }
+  clearTimeout(ed.saveTimer);
+  ed.saveTimer = setTimeout(flushSave, 400);
+  if (redraw) refresh();
+}
+async function flushSave() {
+  clearTimeout(ed.saveTimer);
+  ed.saveTimer = null;
+  if (!ed.exam) return;
+  await DB.put('exams', ed.exam);
+  const s = $('#savest');
+  if (s) { s.textContent = '保存済み'; s.classList.remove('busy'); }
+}
+document.addEventListener('visibilitychange', () => { if (document.hidden && ed.saveTimer) flushSave(); });
+
+function padHTML() {
+  const tabs = `<div class="tabs">${MODES.map(([m, l]) => `<button class="tab${ed.mode === m ? ' on' : ''}" data-mode="${m}">${l}</button>`).join('')}</div>`;
+  const T = ed.exam.teeth;
+  const nav = (extra = '') => `<button class="tool" data-act="prev">◀ 戻る</button><button class="tool" data-act="next">進む ▶</button><button class="tool" data-act="clear">消去</button>${extra}`;
+  let body = '';
+  if (ed.mode === 'ppd') {
+    const c = ed.seq[ed.cur], th = T[c.t];
+    body = `<div class="pad-status">${flashHTML()}${ppdComplete() ? '<span class="ok">✓ 全部位入力済み</span>' : ''}<span>入力中：<strong>${siteName(c.t, c.k)}</strong></span>
+        <span class="tip">出血があるときは「出血」→ 数字 の順に押します</span></div>
+      <div class="keys n12">${[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((n) => `<button class="key${n >= 6 ? ' hi6' : n >= 4 ? ' hi4' : ''}${th.ppd[c.k] === n ? ' sel' : ''}" data-num="${n}">${n}</button>`).join('')}</div>
+      <div class="keys tools7">
+        <button class="tool bopt${th.bop[c.k] ? ' on' : ''}" data-act="bop">● 出血</button>
+        <button class="tool pust${th.pus[c.k] ? ' on' : ''}" data-act="pus">▲ 排膿</button>
+        ${nav(`<button class="tool" data-act="missing">${toothName(c.t)}を欠損に</button>`)}
+        ${fillGroup(ed.bulkVal, 1, 12)}
+      </div>`;
+  } else if (ed.mode === 'mob') {
+    const t = MOB_SEQ[ed.mob];
+    body = `<div class="pad-status">${flashHTML()}<span>入力中：<strong>${toothName(t)} の動揺度</strong></span></div>
+      <div class="keys n4">${[0, 1, 2, 3].map((n) => `<button class="key${T[t].mob === n ? ' sel' : ''}" data-num="${n}">${n}</button>`).join('')}</div>
+      <div class="keys tools">${nav(`<button class="tool" data-act="missing">${toothName(t)}を欠損に</button>`)}${fillGroup(ed.mobBulk, 0, 3)}</div>`;
+  } else if (ed.mode === 'fur') {
+    const c = FURC_SEQ[ed.fur];
+    if (T[c.t].missing) {
+      body = `<div class="pad-status">${flashHTML()}<span>大臼歯がすべて欠損のため、分岐部の入力はありません</span></div>`;
+    } else {
+      const v = T[c.t].fur[c.f];
+      body = `<div class="pad-status">${flashHTML()}<span>入力中：<strong>${toothName(c.t)}　${FURC_NAME[c.f]}の分岐部</strong></span><span class="tip">Lindhe分類（Ⅰ〜Ⅲ度）。病変がなければ「なし」</span></div>
+        <div class="keys n4">${[[0, 'なし'], [1, 'Ⅰ度'], [2, 'Ⅱ度'], [3, 'Ⅲ度']].map(([n, l]) => `<button class="key${(v || 0) === n && v != null ? ' sel' : ''}" data-num="${n}">${l}</button>`).join('')}</div>
+        <div class="keys tools">${nav()}</div>`;
+    }
+  } else if (ed.mode === 'pcr') {
+    const canApply = ed.plFaces.size > 0;
+    body = `<div class="pad-status">${flashHTML()}<span>まとめて：<strong>範囲と面を選んで「付ける」</strong></span>
+        <span class="tip">1か所ずつはチャートの三角をタップ。歯番号をタップでその歯の4面を切り替え</span></div>
+      <div class="bulk top"><span class="blab">範囲</span><div class="keys n7">
+        ${rangeBtn('1')}${rangeBtn('2')}${rangeBtn('all')}<span></span><span></span>
+        ${hasPlaque(ed.exam) ? '<span></span>' : `<button class="tool${plaqueNone(ed.exam) ? ' on' : ''}" data-act="pcrnone">${plaqueNone(ed.exam) ? '✓ 付着なし（PCR 0%）' : '付着なし（PCR 0%）'}</button>`}
+        <button class="tool" data-act="pcrclear">すべて消す</button>
+        ${rangeBtn('4')}${rangeBtn('3')}
+      </div></div>
+      <div class="bulk"><span class="blab">面</span><div class="keys n7">
+        ${PL_FACES.map(([v, l]) => `<button class="tool${ed.plFaces.has(v) ? ' on' : ''}" data-face="${v}">${l}</button>`).join('')}
+        <button class="tool apply" data-act="plon" ${canApply ? '' : 'disabled'}>付ける</button>
+        <button class="tool" data-act="ploff" ${canApply ? '' : 'disabled'}>外す</button>
+        <button class="tool" data-act="plfaces">面の選択を解除</button>
+      </div></div>`;
+  }
+  return tabs + body;
+}
+
+// プラークの範囲ボタン（歯列の位置どおり：上段 右上・左上・全顎、下段 右下・左下）
+function rangeBtn(v) {
+  const l = PL_RANGES.find(([k]) => k === v)[1];
+  return `<button class="tool${ed.plRange === v ? ' on' : ''}" data-range="${v}">${l}</button>`;
+}
+// 引き継ぎ中の印（出血・排膿・プラーク）は、1回目のタップで「確定」、2回目から付け外し
+function tapFlag(type, t, k, holder) {
+  if (isCarried(ed.exam, type, t, k)) unCarry(ed.exam, type, t, k);
+  else holder[k] = !holder[k];
+}
+function flashHTML() {
+  if (!ed.flash) return '';
+  return `<span class="flash">${ed.flash}</span>${ed.undo ? '<button class="tool undo" data-act="undo">↶ 取り消す</button>' : ''}`;
+}
+function fillGroup(v, min, max) {
+  return `<div class="fillgrp">
+    <button class="tool step" data-act="bulkdown" ${v <= min ? 'disabled' : ''}>－</button>
+    <button class="tool fill" data-act="fill">空欄を全部<b>${v}</b>に</button>
+    <button class="tool step" data-act="bulkup" ${v >= max ? 'disabled' : ''}>＋</button>
+  </div>`;
+}
+function fillEmptyMob() {
+  const T = ed.exam.teeth;
+  const filled = MOB_SEQ.filter((t) => !T[t].missing && T[t].mob == null);
+  if (!filled.length) { ed.flash = '空欄はありません'; return; }
+  for (const t of filled) T[t].mob = ed.mobBulk;
+  ed.undo = { kind: 'mob', filled };
+  ed.flash = `空欄 ${filled.length}歯に${ed.mobBulk}を入れました。動揺のある歯をタップして直してください`;
+}
+function fillEmptyPPD() {
+  const T = ed.exam.teeth, filled = [];
+  for (const s of ed.seq) {
+    const th = T[s.t];
+    if (!th.missing && th.ppd[s.k] == null) { th.ppd[s.k] = ed.bulkVal; filled.push(s); }
+  }
+  if (!filled.length) { ed.flash = '空欄はありません'; return; }
+  ed.undo = { kind: 'ppd', filled };
+  ed.flash = `空欄 ${filled.length}部位に${ed.bulkVal}を入れました。深い部位をタップして直してください`;
+}
+function applyPlaque(on) {
+  const T = ed.exam.teeth;
+  const teeth = ALL.filter((t) => !T[t].missing && (ed.plRange === 'all' || String(quad(t)) === ed.plRange));
+  const before = teeth.map((t) => [t, { ...T[t].pl }]);
+  const carryPl = { ...((ed.exam.carry || {}).pl || {}) };
+  for (const t of teeth) for (const f of ed.plFaces) { T[t].pl[f] = on; unCarry(ed.exam, 'pl', t, f); }
+  ed.undo = { kind: 'pl', before, pcrNone: plaqueNone(ed.exam), carryPl };
+  if (on) ed.exam.pcrNone = false;
+  const range = PL_RANGES.find(([v]) => v === ed.plRange)[1];
+  const faces = PL_FACES.filter(([v]) => ed.plFaces.has(v)).map(([, l]) => l).join('・');
+  ed.flash = `${range}の${faces}を${on ? '付けました' : '外しました'}（${teeth.length}歯）`;
+}
+function undoBulk(u) {
+  const T = ed.exam.teeth;
+  if (u.kind === 'ppd') for (const s of u.filled) delete T[s.t].ppd[s.k];
+  if (u.kind === 'mob') for (const t of u.filled) T[t].mob = null;
+  if (u.kind === 'voice') { undoVoiceOps(u.ops); if (voice.hist[voice.hist.length - 1] === u.ops) voice.hist.pop(); ed.flash = '音声の入力を取り消しました'; return; }
+  if (u.kind === 'unmiss') { markMissing(u.t); ed.flash = `${toothName(u.t)}を欠損に戻しました`; return; }
+  if (u.kind === 'pl') {
+    for (const [t, pl] of u.before) T[t].pl = pl;
+    ed.exam.pcrNone = u.pcrNone;
+    if (u.carryPl && ed.exam.carry) ed.exam.carry.pl = u.carryPl;
+  }
+  ed.flash = '一括入力を取り消しました';
+}
+
+function markMissing(t) {
+  ed.exam.teeth[t].missing = true;
+  for (const key of ['cur', 'mob', 'fur']) {
+    const [list, toothOf] = key === 'cur' ? [ed.seq, (s) => s.t] : key === 'mob' ? [MOB_SEQ, (x) => x] : [FURC_SEQ, (s) => s.t];
+    if (toothOf(list[ed[key]]) !== t) continue;
+    let j = nextOpen(list, ed[key], 1, toothOf);
+    if (j === ed[key]) j = nextOpen(list, ed[key], -1, toothOf);
+    ed[key] = j;
+  }
+}
+
+function onPadTap(e) {
+  const b = e.target.closest('button');
+  if (!b || b.disabled) return;
+  const T = ed.exam.teeth;
+  const undo = ed.undo;
+  ed.undo = null;
+  if (b.dataset.act === 'undo' && undo) { undoBulk(undo); return touch(); }
+  if (b.dataset.mode) { ed.mode = b.dataset.mode; return refresh(); }
+  const num = b.dataset.num !== undefined ? Number(b.dataset.num) : null;
+  const act = b.dataset.act;
+
+  if (ed.mode === 'ppd') {
+    const c = ed.seq[ed.cur], th = T[c.t];
+    if (num !== null) { th.ppd[c.k] = num; unCarry(ed.exam, 'ppd', c.t, c.k); voice.lastSite = c; ed.cur = stepPPD(1); }
+    else if (act === 'bop') tapFlag('bop', c.t, c.k, th.bop);
+    else if (act === 'pus') tapFlag('pus', c.t, c.k, th.pus);
+    else if (act === 'prev') { ed.cur = stepPPD(-1); return refresh(); }
+    else if (act === 'next') { ed.cur = stepPPD(1); return refresh(); }
+    else if (act === 'bulkdown' || act === 'bulkup') { ed.bulkVal = Math.min(12, Math.max(1, ed.bulkVal + (act === 'bulkup' ? 1 : -1))); return refresh(); }
+    else if (act === 'clear') {
+      delete th.ppd[c.k]; delete th.bop[c.k]; delete th.pus[c.k];
+      for (const ty of ['ppd', 'bop', 'pus']) unCarry(ed.exam, ty, c.t, c.k);
+    }
+    else if (act === 'missing') markMissing(c.t);
+    else if (act === 'fill') { fillEmptyPPD(); ed.cur = firstEmpty(ed.seq, (s) => s.t, (s) => T[s.t].ppd[s.k] == null); }
+    else return;
+    return touch();
+  }
+  if (ed.mode === 'mob') {
+    const t = MOB_SEQ[ed.mob];
+    if (num !== null) { T[t].mob = num; unCarry(ed.exam, 'mob', t); ed.mob = stepMob(1); }
+    else if (act === 'prev') { ed.mob = stepMob(-1); return refresh(); }
+    else if (act === 'next') { ed.mob = stepMob(1); return refresh(); }
+    else if (act === 'clear') { T[t].mob = null; unCarry(ed.exam, 'mob', t); }
+    else if (act === 'missing') markMissing(t);
+    else if (act === 'bulkdown' || act === 'bulkup') { ed.mobBulk = Math.min(3, Math.max(0, ed.mobBulk + (act === 'bulkup' ? 1 : -1))); return refresh(); }
+    else if (act === 'fill') { fillEmptyMob(); ed.mob = firstEmpty(MOB_SEQ, (x) => x, (x) => T[x].mob == null); }
+    else return;
+    return touch();
+  }
+  if (ed.mode === 'fur') {
+    const c = FURC_SEQ[ed.fur];
+    if (num !== null) { T[c.t].fur[c.f] = num; unCarry(ed.exam, 'fur', c.t, c.f); ed.fur = stepFur(1); }
+    else if (act === 'prev') { ed.fur = stepFur(-1); return refresh(); }
+    else if (act === 'next') { ed.fur = stepFur(1); return refresh(); }
+    else if (act === 'clear') { delete T[c.t].fur[c.f]; unCarry(ed.exam, 'fur', c.t, c.f); }
+    else return;
+    return touch();
+  }
+  if (ed.mode === 'pcr') {
+    if (b.dataset.range) { ed.plRange = b.dataset.range; return refresh(); }
+    if (b.dataset.face) { const f = b.dataset.face; if (ed.plFaces.has(f)) ed.plFaces.delete(f); else ed.plFaces.add(f); return refresh(); }
+    if (act === 'plfaces') { ed.plFaces.clear(); return refresh(); }
+    if (act === 'plon' || act === 'ploff') applyPlaque(act === 'plon');
+    else if (act === 'pcrnone') ed.exam.pcrNone = !plaqueNone(ed.exam);
+    else if (act === 'pcrclear') {
+      ed.undo = { kind: 'pl', before: ALL.map((t) => [t, { ...T[t].pl }]), pcrNone: plaqueNone(ed.exam), carryPl: { ...((ed.exam.carry || {}).pl || {}) } };
+      for (const t of ALL) T[t].pl = {};
+      if (ed.exam.carry) ed.exam.carry.pl = {};
+      ed.exam.pcrNone = false;
+      ed.flash = 'プラークの記録をすべて消しました';
+    } else return;
+    return touch();
+  }
+}
+
+function onChartTap(e) {
+  const T = ed.exam.teeth;
+  ed.undo = null;
+  const surf = e.target.closest('[data-surf]');
+  if (surf) {
+    const t = Number(surf.dataset.t), s = surf.dataset.surf;
+    tapFlag('pl', t, s, T[t].pl);
+    ed.exam.pcrNone = false;
+    ed.mode = 'pcr';
+    return touch();
+  }
+  const cell = e.target.closest('[data-k]');
+  if (cell) {
+    const t = Number(cell.dataset.t), k = cell.dataset.k;
+    voice.lastSite = null;
+    ed.mode = 'ppd';
+    const i = ed.seq.findIndex((s) => s.t === t && s.k === k);
+    if (i >= 0) ed.cur = i;
+    return refresh();
+  }
+  const fcell = e.target.closest('[data-f]');
+  if (fcell) {
+    const t = Number(fcell.dataset.t), f = fcell.dataset.f;
+    ed.mode = 'fur';
+    ed.fur = FURC_SEQ.findIndex((s) => s.t === t && s.f === f);
+    return refresh();
+  }
+  const mob = e.target.closest('[data-mob]');
+  if (mob) { ed.mode = 'mob'; ed.mob = MOB_SEQ.indexOf(Number(mob.dataset.mob)); return refresh(); }
+  const num = e.target.closest('[data-tooth]');
+  if (num) {
+    const t = Number(num.dataset.tooth), th = T[t];
+    if (th.missing) {
+      th.missing = false;
+      ed.undo = { kind: 'unmiss', t };
+      ed.flash = `${toothName(t)}の欠損を解除しました`;
+      return touch();
+    }
+    if (ed.mode === 'pcr') {
+      const all = PL.every((s) => th.pl[s]);
+      for (const s of PL) { th.pl[s] = !all; unCarry(ed.exam, 'pl', t, s); }
+      ed.exam.pcrNone = false;
+      return touch();
+    }
+    if (ed.mode === 'mob') { ed.mob = MOB_SEQ.indexOf(t); return refresh(); }
+    if (ed.mode === 'fur' && isMolar(t)) { ed.fur = FURC_SEQ.findIndex((s) => s.t === t); return refresh(); }
+    ed.mode = 'ppd';
+    const i = ed.seq.findIndex((s) => s.t === t);
+    if (i >= 0) ed.cur = i;
+    return refresh();
+  }
+}
+
+/* ================= 音声入力（ポケット） ================= */
+// Safari／Chrome の音声認識を使う。ホーム画面に追加したアプリでは使えない（Safari のタブで開く）
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+const voice = { rec: null, on: false, lastSite: null, endedSite: null, hist: [], interim: '', msg: '', prov: null, timer: null, log: [] };
+const VOICE_EARLY_MS = 350; // 話している途中でも、この時間言葉が止まったら仮に入力する
+
+// ---- 速さの工夫：確定を待たずに仮入力し、確定した文が違えば入れ直す ----
+const sameSpeech = (a, b) => { const n = (t) => t.replace(/[\s、。,.!?！？]/g, ''); return n(a) === n(b); };
+// 認識結果の束を処理する。途中結果は複数に分かれて届くことがあるので、つなげて1つの文として扱う
+function onVoiceResults(items) {
+  let interim = '';
+  for (const it of items) {
+    if (it.isFinal) voiceFinal(it.text);
+    else interim += it.text;
+  }
+  voice.interim = interim;
+  if (interim.trim()) voiceInterim(interim);
+  renderVoice();
+}
+function undoProv() {
+  const p = voice.prov;
+  voice.prov = null;
+  if (!p) return;
+  if (p.ops && p.ops.length) {
+    undoVoiceOps(p.ops);
+    const i = voice.hist.indexOf(p.ops);
+    if (i >= 0) voice.hist.splice(i, 1);
+  }
+  ed.cur = p.cur; voice.lastSite = p.lastSite; voice.endedSite = p.endedSite;
+}
+function voiceInterim(text) {
+  if (voice.prov && sameSpeech(voice.prov.text, text)) return;
+  clearTimeout(voice.timer);
+  voice.timer = setTimeout(() => {
+    undoProv();
+    const before = { cur: ed.cur, lastSite: voice.lastSite, endedSite: voice.endedSite };
+    const ops = handleSpeech(text, true);
+    if (ops) voice.prov = { text, ops, ...before };
+  }, VOICE_EARLY_MS);
+}
+function voiceFinal(text) {
+  clearTimeout(voice.timer);
+  if (voice.prov && sameSpeech(voice.prov.text, text)) { voice.prov = null; addVoiceLog(text); return; } // 仮入力のまま確定
+  undoProv(); // 仮入力と違う文で確定したら、仮入力を戻してから入れ直す
+  handleSpeech(text);
+  addVoiceLog(text);
+}
+function addVoiceLog(text) {
+  voice.log.unshift({ time: new Date().toLocaleTimeString('ja-JP'), raw: text, result: voice.lastResult || '' });
+  voice.log.length = Math.min(voice.log.length, 50);
+}
+function showVoiceLog() {
+  const rows = voice.log.map((l) => `<tr><td>${esc(l.time)}</td><td>「${esc(l.raw)}」</td><td>${esc(l.result)}</td></tr>`).join('');
+  openDialog(`<div class="dlg-body"><h2>聞き取りの記録（新しい順）</h2>
+    <p class="hint">聞き間違いがあれば、この画面を見せてください。読み替えのルールを足します。</p>
+    <div class="vlog">${rows ? `<table><thead><tr><th>時刻</th><th>聞き取った言葉</th><th>入力した内容</th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="empty">まだ記録がありません</p>'}</div>
+    <div class="dlg-actions"><button class="btn primary" data-close>閉じる</button></div></div>`);
+}
+
+function voiceToggle() { if (voice.on) voiceStop(); else voiceStart(); }
+function voiceStart() {
+  if (!SR) { voiceMsg('この画面では音声認識が使えません。iPadは Safari のタブで、Macは Safari か Chrome で開いてください'); return; }
+  const r = new SR();
+  r.lang = 'ja-JP';
+  r.continuous = true;
+  r.interimResults = true;
+  r.onresult = (e) => {
+    const items = [];
+    for (let i = e.resultIndex; i < e.results.length; i++) items.push({ text: e.results[i][0].transcript, isFinal: e.results[i].isFinal });
+    onVoiceResults(items);
+  };
+  r.onerror = (e) => {
+    if (e.error === 'no-speech' || e.error === 'aborted') return;
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+      voice.on = false;
+      voiceMsg('マイクが使えません。マイクの使用を許可してください（iPadでは https での接続が必要です）');
+    } else voiceMsg('音声認識のエラー：' + esc(e.error));
+  };
+  // 無音が続くと止まることがあるので、聞き取り中は自動で再開する
+  r.onend = () => { if (voice.on && voice.rec === r) setTimeout(() => { if (voice.on && voice.rec === r) try { r.start(); } catch { /* 再開済み */ } }, 250); };
+  voice.rec = r;
+  voice.on = true;
+  voice.lastSite = null;
+  voice.endedSite = null;
+  try { r.start(); } catch (err) { voice.on = false; voiceMsg('音声認識を開始できませんでした：' + esc(err.message)); return; }
+  if (ed.mode !== 'ppd') { ed.mode = 'ppd'; refresh(); }
+  voiceMsg('「3、3、4プラス」のように話してください');
+}
+function voiceStop(silent = false) {
+  clearTimeout(voice.timer);
+  voice.prov = null;
+  voice.on = false;
+  const r = voice.rec;
+  voice.rec = null;
+  voice.interim = '';
+  if (r) try { r.stop(); } catch { /* 停止済み */ }
+  if (silent) voice.msg = '';
+  renderVoice();
+}
+function voiceMsg(m) { voice.msg = m; renderVoice(); }
+function renderVoice() {
+  const b = $('#mic');
+  if (b) { b.classList.toggle('rec', voice.on); b.textContent = voice.on ? '● 聞き取り中（押すと停止）' : '🎤 音声入力'; }
+  const v = $('#voicebar');
+  if (!v) return;
+  v.hidden = !voice.on && !voice.msg;
+  v.innerHTML = `${voice.on ? '<span class="vdot"></span>' : ''}<span class="vm">${voice.msg}</span>${voice.interim ? `<span class="vi">${esc(voice.interim)}…</span>` : ''}
+    <button class="tool undo vlogbtn" id="vlog">聞き取りの記録</button>`;
+  $('#vlog').onclick = showVoiceLog;
+}
+
+// 聞き取った文字を、入力の指示（トークン）に分ける
+const KD = { '〇': 0, '零': 0, '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9 };
+const SPEECH_FIX = [
+  [/みぎうえ/g, '右上'], [/ひだりうえ/g, '左上'], [/みぎした/g, '右下'], [/ひだりした/g, '左下'],
+  // 部位の言葉の聞き間違い（「聞き取りの記録」で見つかったもの＋同じ音の候補）
+  [/頰側|ほお側|ほおがわ|頬がわ|きょうそく|教則|協則|共則|強則|胸側|教側/g, '頬側'],
+  [/こうがい(?:側|そく|がわ)|口蓋がわ|(?:公害|郊外|校外|構外|口外|号外)(?:側|そく|即|則)?/g, '口蓋側'],
+  [/ぜっそく|ぜつそく|舌がわ|したがわ|絶息|舌速|絶則|舌則/g, '舌側'],
+  [/きんしん|近親|謹慎|近信|金心|近身|均心|近森|禁止|禁震|禁振|禁身|禁心|禁新|禁信|金信|金振|筋心/g, '近心'], [/えんしん|延伸|円心|遠信|円陣|炎心/g, '遠心'], [/真ん中|まんなか|ちゅうおう/g, '中央'],
+  [/ぷらす|\+/g, 'プラス'], [/まいなす/g, 'マイナス'], [/はいのう|排のう/g, '排膿'],
+];
+// 数字の読み。読みだけでできている部分（ひらがな・カタカナ・同じ音の漢字の並び）に限って数字に直す
+const KANA_NUM = [['きゅう', '9'], ['じゅういち', ' 11! '], ['じゅうに', ' 12! '], ['じゅう', ' 10! '], ['いち', '1'], ['よん', '4'], ['さん', '3'], ['ろく', '6'],
+  ['なな', '7'], ['しち', '7'], ['はち', '8'], ['ぜろ', '0'], ['に', '2'], ['ご', '5'], ['く', '9']];
+const HOMOPHONE = { 市: '1', 似: '2', 煮: '2', 酸: '3', 参: '3', 産: '3', 散: '3', 予: '4', 後: '5', 語: '5', 碁: '5', 誤: '5', 録: '6', 蜂: '8', 鉢: '8', 急: '9', 級: '9', 球: '9' };
+const toHira = (t) => t.replace(/[\u30a1-\u30f6]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0x60));
+function kanaToDigits(run) {
+  let out = '', i = 0;
+  const h = toHira(run);
+  while (i < h.length) {
+    const hit = KANA_NUM.find(([w]) => h.startsWith(w, i));
+    if (!hit) return null;
+    out += hit[1] + ' ';
+    i += hit[0].length;
+  }
+  return out;
+}
+function readNumbers(s) {
+  s = s.replace(/[\u3041-\u3096\u30a1-\u30fcー]+/g, (run) => kanaToDigits(run.replace(/ー/g, '')) ?? run);
+  s = s.replace(/[\u4e00-\u9fff]+/g, (run) => ([...run].every((c) => HOMOPHONE[c]) ? [...run].map((c) => HOMOPHONE[c]).join(' ') : run));
+  return s;
+}
+
+function tokenizeSpeech(raw) {
+  let s = raw.normalize('NFKC');
+  for (const [re, to] of SPEECH_FIX) s = s.replace(re, to);
+  s = s.replace(/(右上|左上|右下|左下|頬側|口蓋側|舌側|近心|遠心|中央|プラス|マイナス|排膿)/g, ' $1 '); // 言葉の区切りをはっきりさせる
+  s = readNumbers(s);
+  s = s.replace(/十([一二])?/g, (m, d) => ` ${10 + (d ? KD[d] : 0)}! `); // 「十」「十一」「十二」は2桁の数
+  s = s.replace(/[〇零一二三四五六七八九]/g, (c) => KD[c]);
+  s = s.replace(/[百千]/g, '');
+  const re = /(右上|左上|右下|左下)\s*の?\s*([1-8])|(頬側|口蓋側|舌側)|(近心|遠心|中央)|(プラス|出血)|(マイナス)|(排膿)|(\d+!?)|(取り消し|取消し?|とりけし|取り消す)|(戻る|もどる)|(進む|すすむ|次|つぎ|スキップ)|(停止|ストップ|終了)/g;
+  const toks = [];
+  let m;
+  while ((m = re.exec(s))) {
+    if (m[1]) toks.push({ type: 'tooth', t: { 右上: 10, 左上: 20, 左下: 30, 右下: 40 }[m[1]] + Number(m[2]) });
+    else if (m[3]) toks.push({ type: 'side', side: m[3] === '頬側' ? 'b' : 'l' });
+    else if (m[4]) toks.push({ type: 'pos', pos: { 近心: 'm', 遠心: 'd', 中央: 'c' }[m[4]] });
+    else if (m[5]) toks.push({ type: 'flag', field: 'bop', val: true, label: '出血＋' });
+    else if (m[6]) toks.push({ type: 'flag', field: 'bop', val: false, label: '出血なし' });
+    else if (m[7]) toks.push({ type: 'flag', field: 'pus', val: true, label: '排膿' });
+    else if (m[8]) {
+      const d = m[8];
+      const vals = [];
+      if (d.endsWith('!')) vals.push(Number(d.slice(0, -1)));
+      else for (let i = 0; i < d.length; i++) {
+        // 数字が続いたら1桁ずつ別の部位。「10」だけは10mm（0mmはないため）
+        if (d[i] === '1' && d[i + 1] === '0') { vals.push(10); i++; } else if (d[i] !== '0') vals.push(Number(d[i]));
+      }
+      if (vals.length) toks.push({ type: 'num', vals });
+    } else if (m[9]) toks.push({ type: 'undo' });
+    else if (m[10]) toks.push({ type: 'prev' });
+    else if (m[11]) toks.push({ type: 'next' });
+    else if (m[12]) toks.push({ type: 'stop' });
+  }
+  return toks;
+}
+
+const shortSite = (s) => `${toothName(s.t)}${sideName(s.t, s.k[0])[0]}${POS[s.k[1]][0]}`;
+function undoVoiceOps(ops) {
+  const T = ed.exam.teeth;
+  for (const op of [...ops].reverse()) {
+    if (op.old === undefined) delete T[op.t][op.field][op.k]; else T[op.t][op.field][op.k] = op.old;
+    if (op.oldCarry) ed.exam.carry[op.field][ck(op.t, op.k)] = true;
+  }
+  const i = ed.seq.findIndex((s) => s.t === ops[0].t && s.k === ops[0].k);
+  if (i >= 0) ed.cur = i;
+  voice.endedSite = null;
+}
+
+// provisional = 確定前の仮入力。取り消し・移動などの指示を含むときは仮入力しない
+function handleSpeech(raw, provisional = false) {
+  if (view.name !== 'editor' || !ed.exam) return null;
+  const toks = tokenizeSpeech(raw);
+  if (provisional && (!toks.length || toks.some((t) => ['undo', 'prev', 'next', 'stop'].includes(t.type)))) return null;
+  if (ed.mode !== 'ppd') ed.mode = 'ppd';
+  const T = ed.exam.teeth;
+  const ops = [], done = [];
+  let target = null;
+  let blocked = false; // 指定した歯が欠損などで見つからないときは、次の歯の指定まで数字を入れない
+  let moved = false;
+  const cur = () => ed.seq[ed.cur];
+  const setField = (site, field, val) => {
+    const th = T[site.t];
+    ops.push({ t: site.t, k: site.k, field, old: th[field][site.k], oldCarry: isCarried(ed.exam, field, site.t, site.k) });
+    th[field][site.k] = val;
+    unCarry(ed.exam, field, site.t, site.k);
+  };
+  // 「右上6」「右上6 口蓋側 近心」などの指定を、チャートの部位に直す
+  const resolve = (tg) => {
+    if (T[tg.t].missing) { done.push(`${toothName(tg.t)}は欠損です`); return -1; }
+    const side = tg.side || cur().k[0];
+    return tg.pos ? ed.seq.findIndex((s) => s.t === tg.t && s.k === side + tg.pos) : ed.seq.findIndex((s) => s.t === tg.t && s.k[0] === side);
+  };
+  const moveToTarget = () => {
+    if (!target) return;
+    const i = resolve(target);
+    if (i >= 0) { ed.cur = i; voice.endedSite = null; moved = true; } else blocked = true;
+    target = null;
+  };
+  const undoLast = () => {
+    if (ops.length) voice.hist.push(ops.splice(0));
+    const last = voice.hist.pop();
+    if (!last) { done.push('取り消せる入力がありません'); return; }
+    undoVoiceOps(last);
+    done.push('直前の音声入力を取り消しました');
+  };
+
+  for (const tk of toks) {
+    if (tk.type === 'tooth') { moveToTarget(); blocked = false; target = { t: tk.t, side: null, pos: null }; }
+    else if (tk.type === 'side') { target ||= { t: cur().t, side: null, pos: null }; target.side = tk.side; }
+    else if (tk.type === 'pos') { target ||= { t: cur().t, side: cur().k[0], pos: null }; target.pos = tk.pos; }
+    else if (tk.type === 'num') {
+      moveToTarget();
+      if (blocked) continue;
+      for (const n of tk.vals) {
+        if (T[cur().t].missing) { const j = stepPPD(1); if (j === ed.cur) break; ed.cur = j; }
+        const s = cur();
+        if (voice.endedSite === s) { done.push('最後の部位まで入力済みです'); break; }
+        setField(s, 'ppd', n);
+        voice.lastSite = s;
+        done.push(`${shortSite(s)} ${n}`);
+        const j = stepPPD(1);
+        if (j === ed.cur) voice.endedSite = s; else ed.cur = j;
+      }
+    } else if (tk.type === 'flag') {
+      let s;
+      if (target && target.pos) { const i = resolve(target); target = null; if (i < 0) { blocked = true; continue; } s = ed.seq[i]; }
+      else { moveToTarget(); if (blocked) continue; s = voice.lastSite || cur(); }
+      setField(s, tk.field, tk.val);
+      voice.lastSite = s;
+      done.push(`${shortSite(s)} ${tk.label}`);
+    } else if (tk.type === 'undo') undoLast();
+    else if (tk.type === 'prev') { moveToTarget(); ed.cur = stepPPD(-1); voice.endedSite = null; moved = true; }
+    else if (tk.type === 'next') { moveToTarget(); ed.cur = stepPPD(1); moved = true; }
+    else if (tk.type === 'stop') { voiceStop(); }
+  }
+  moveToTarget();
+  if (moved && !ops.length) done.push(`${siteName(cur().t, cur().k)} へ移動しました`);
+
+  if (ops.length) {
+    voice.hist.push(ops);
+    ed.undo = { kind: 'voice', ops };
+    ed.flash = '音声で入力しました';
+  }
+  const heard = `<b>「${esc(raw.trim())}」</b>`;
+  voice.lastResult = done.length ? done.join('、') : '入力できる言葉がありませんでした';
+  voice.msg = `${heard} → ${esc(done.length ? done.slice(-8).join('、') : voice.lastResult)}`;
+  touch();
+  renderVoice();
+  return ops;
+}
+
+/* ================= 印刷 ================= */
+function printHTML(p, ex) {
+  const age = ageAt(p.birth, ex.date);
+  return `<div class="pr-head"><div class="pr-title">歯周組織検査（ペリオチャート）</div><div class="pr-clinic">${esc(settings.clinicName)}</div></div>
+    <table class="pr-info">
+      <tr><th>氏名</th><td>${esc(p.name)} 様</td><th>ふりがな</th><td>${esc(p.kana || '')}</td><th>カルテ番号</th><td>${esc(p.chartNo || '')}</td></tr>
+      <tr><th>生年月日</th><td>${p.birth ? `${fmtDate(p.birth)}（${age}歳）` : ''}</td><th>検査日</th><td>${fmtDate(ex.date)}</td><th>検査者</th><td>${esc(ex.examiner || '')}</td></tr>
+    </table>
+    ${chartHTML(ex, { print: true })}
+    <div class="pr-stats">${statsHTML(calcStats(ex))}</div>
+    <div class="pr-legend"><span><i class="lg bop"></i>出血（BOP）</span><span><i class="lg pus"></i>排膿</span>
+      <span><i class="lg p4"></i>PPD 4〜5mm</span><span><i class="lg p6"></i>PPD 6mm以上</span>
+      <span><i class="lg fu"></i>根分岐部病変（Lindhe分類 Ⅰ〜Ⅲ度）</span><span><i class="lg pl"></i>プラーク付着</span>
+      <span>動揺度 0〜3</span><span>斜線：欠損歯</span></div>`;
+}
+async function printExam(p, ex) {
+  $('#print').innerHTML = printHTML(p, ex);
+  setTimeout(() => window.print(), 50);
+}
+
+/* ================= 設定・バックアップ ================= */
+async function showSettings() {
+  view = { name: 'settings' };
+  const persisted = navigator.storage && navigator.storage.persisted ? await navigator.storage.persisted() : null;
+  app().innerHTML = `
+    <header class="bar"><button class="btn ghost" data-go="list">‹ 患者一覧</button><h1>設定・バックアップ</h1><div class="grow"></div></header>
+    <main class="wrap stack">
+      <section class="card"><h2>医院名（印刷に表示されます）</h2><input id="clinic" class="text" value="${esc(settings.clinicName)}" placeholder="例：〇〇歯科医院" autocomplete="off"></section>
+      <section class="card"><h2>ポケット測定の順番</h2>
+        ${Object.entries(ORDERS).map(([k, o]) => `<label class="radio"><input type="radio" name="order" value="${k}" ${settings.order === k ? 'checked' : ''}>
+          <span><b>${o.label}</b><small>${o.desc}</small></span></label>`).join('')}</section>
+      <section class="card"><h2>バックアップ</h2>
+        <p>データはこのiPadの中だけに保存されています。故障・紛失に備えて、定期的に書き出して院内PCに保存してください。</p>
+        <p class="sub">最終バックアップ：${settings.lastBackupAt ? new Date(settings.lastBackupAt).toLocaleString('ja-JP') : 'まだありません'}</p>
+        <div class="row-tools"><button class="btn primary" data-act="backup">バックアップを書き出す</button>
+          <label class="btn">バックアップから読み込む<input type="file" id="imp" class="vh" accept="application/json,.json"></label></div>
+        <p class="sub">保存領域の保護：${persisted === null ? '不明' : persisted ? '有効（ブラウザが自動で消さない設定）' : '未設定（ホーム画面に追加して使うと安定します）'}</p></section>
+      <section class="card"><h2>見本データ</h2><p>動作確認用に、架空の患者「見本 太郎」と3回分の検査を追加します。</p><button class="btn" id="demo">見本データを追加</button></section>
+    </main>`;
+  $('#clinic').onchange = (e) => { settings.clinicName = e.target.value.trim(); saveSettings(); };
+  document.querySelectorAll('input[name=order]').forEach((r) => (r.onchange = () => { settings.order = r.value; saveSettings(); }));
+  $('#imp').onchange = (e) => { const f = e.target.files[0]; if (f) importBackup(f); e.target.value = ''; };
+  $('#demo').onclick = async () => {
+    const { patient, exams } = makeDemo();
+    await DB.put('patients', patient);
+    for (const ex of exams) await DB.put('exams', ex);
+    showPatient(patient.id);
+  };
+}
+
+async function exportBackup() {
+  const data = { app: 'perio-chart', version: 1, exportedAt: new Date().toISOString(), patients: await DB.all('patients'), exams: await DB.all('exams'), settings };
+  const d = new Date();
+  const name = `perio-backup-${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}-${pad2(d.getHours())}${pad2(d.getMinutes())}.json`;
+  const file = new File([JSON.stringify(data)], name, { type: 'application/json' });
+  try {
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: 'ペリオチャートのバックアップ' });
+    } else {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(file);
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    }
+  } catch (err) {
+    if (err && err.name === 'AbortError') return; // 共有シートを閉じた
+    await notify('バックアップを書き出せませんでした：' + err);
+    return;
+  }
+  settings.lastBackupAt = Date.now();
+  await saveSettings();
+  if ($('#imp')) showSettings();
+  else if ($('.banner')) $('.banner').remove();
+}
+
+async function importBackup(file) {
+  let data;
+  try { data = JSON.parse(await file.text()); } catch { await notify('ファイルを読み込めませんでした。'); return; }
+  if (!data || data.app !== 'perio-chart') { await notify('このアプリのバックアップファイルではありません。'); return; }
+  if (!(await askConfirm(`患者 ${data.patients.length}名・検査 ${data.exams.length}件 を読み込みます。\n今あるデータは消えず、同じ記録は新しいほうが残ります。`, '読み込む'))) return;
+  let np = 0, ne = 0;
+  for (const [store, rows] of [['patients', data.patients], ['exams', data.exams]]) {
+    for (const r of rows) {
+      const cur = await DB.get(store, r.id);
+      if (!cur || (r.updatedAt || 0) > (cur.updatedAt || 0)) {
+        await DB.put(store, r);
+        if (store === 'patients') np++; else ne++;
+      }
+    }
+  }
+  if (!settings.clinicName && data.settings && data.settings.clinicName) { settings.clinicName = data.settings.clinicName; await saveSettings(); }
+  await notify(`読み込みました（患者 ${np}件・検査 ${ne}件を追加・更新）`);
+  showSettings();
+}
+
+/* ================= 見本データ ================= */
+function makeDemo() {
+  let seed = 7;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+  const patient = { id: uid(), chartNo: '9999', name: '見本 太郎', kana: 'みほん たろう', birth: '1968-04-12', note: '動作確認用の架空の患者', createdAt: Date.now(), updatedAt: Date.now() };
+  const missing = [18, 28, 38, 48, 36];
+  const base = {};
+  for (const t of ALL) {
+    base[t] = {};
+    for (const k of SITES) {
+      let v = 2 + Math.floor(rnd() * 2);
+      if (isMolar(t) && rnd() < 0.5) v += 2 + Math.floor(rnd() * 3);
+      if (t % 10 <= 3 && rnd() < 0.15) v += 2;
+      base[t][k] = v;
+    }
+  }
+  const furBase = { 16: { b: 2, dp: 1 }, 17: { mp: 1 }, 26: { b: 1 }, 46: { b: 2, l: 1 }, 37: { b: 1 } };
+  const dates = ['2026-03-02', '2026-06-15', '2026-09-28'];
+  const exams = dates.map((date, i) => {
+    const ex = newExam(patient.id, date, '歯科衛生士A', null);
+    ex.createdAt = Date.now() + i;
+    for (const t of ALL) {
+      const th = ex.teeth[t];
+      if (missing.includes(t)) { th.missing = true; continue; }
+      for (const k of SITES) {
+        const b = base[t][k];
+        const v = Math.max(1, b - (b >= 4 ? i : 0) - (rnd() < 0.2 ? 1 : 0));
+        th.ppd[k] = v;
+        if (rnd() < (v >= 4 ? 0.6 : 0.12) * (1 - i * 0.25)) th.bop[k] = true;
+        if (v >= 6 && i === 0 && rnd() < 0.3) th.pus[k] = true;
+      }
+      th.mob = isMolar(t) && base[t].bc >= 5 && i < 2 ? 1 : 0;
+      for (const s of PL) if (rnd() < 0.55 - i * 0.15) th.pl[s] = true;
+      if (isMolar(t)) for (const f of furcKeys(t)) th.fur[f] = (furBase[t] && furBase[t][f]) || 0;
+    }
+    ex.updatedAt = Date.now();
+    return ex;
+  });
+  return { patient, exams };
+}
+
+/* ================= 新しいバージョンの確認 ================= */
+// プログラムのファイルが書き換わったら、画面上部にお知らせを出す（自動では再読み込みしない）
+const UPDATE_FILES = ['index.html', 'app.js', 'app.css'];
+const UPDATE_INTERVAL = 20000;
+let updateBase = null;
+function hashText(t) { let h = 5381; for (let i = 0; i < t.length; i++) h = ((h << 5) + h + t.charCodeAt(i)) | 0; return h; }
+async function filesSignature() {
+  const parts = await Promise.all(UPDATE_FILES.map(async (f) => {
+    const r = await fetch(f, { cache: 'no-store' });
+    if (!r.ok) throw new Error(f);
+    return hashText(await r.text());
+  }));
+  return parts.join('-');
+}
+async function checkUpdate() {
+  try {
+    const sig = await filesSignature();
+    if (updateBase === null) updateBase = sig;
+    else if (sig !== updateBase) showUpdateBanner();
+  } catch { /* オフラインなどは無視 */ }
+}
+function showUpdateBanner() {
+  const u = $('#update');
+  if (!u.hidden) return;
+  u.innerHTML = '<span>新しいバージョンがあります</span><button class="btn primary" id="doUpdate">更新する</button>';
+  u.hidden = false;
+  $('#doUpdate').onclick = applyUpdate;
+}
+async function applyUpdate() {
+  if (view.name === 'editor') await flushSave();
+  try { sessionStorage.setItem('perio-reopen', JSON.stringify({ ...view, mode: ed.mode })); } catch { /* 保存できなくても更新はする */ }
+  location.reload();
+}
+async function reopenView() {
+  let v = null;
+  try { v = JSON.parse(sessionStorage.getItem('perio-reopen')); sessionStorage.removeItem('perio-reopen'); } catch { v = null; }
+  if (v && v.name === 'editor' && (await DB.get('exams', v.examId))) {
+    await openEditor(v.examId);
+    if (MODES.some(([m]) => m === v.mode)) { ed.mode = v.mode; refresh(); }
+  } else if (v && v.name === 'patient') await showPatient(v.pid, v.showDeleted);
+  else if (v && v.name === 'settings') await showSettings();
+  else await showList();
+}
+
+/* ================= 起動 ================= */
+(async function init() {
+  if (location.hash === '#print-sample') {
+    // 印刷レイアウトの確認用（保存はしない）
+    const { patient, exams } = makeDemo();
+    settings.clinicName = '（医院名）';
+    document.body.classList.add('print-sample');
+    $('#print').innerHTML = printHTML(patient, exams[0]);
+    return;
+  }
+  try { await DB.open(); } catch (err) {
+    app().innerHTML = `<p class="wrap">データベースを開けませんでした：${esc(err)}</p>`;
+    return;
+  }
+  await loadSettings();
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+  await reopenView();
+  checkUpdate();
+  setInterval(checkUpdate, UPDATE_INTERVAL);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) checkUpdate(); });
+})();
