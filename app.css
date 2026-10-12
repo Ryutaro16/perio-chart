@@ -129,6 +129,7 @@ dialog::backdrop { background: rgba(15, 23, 42, .35); }
 .voicebar { display: flex; align-items: center; gap: 10px; padding: 6px 14px; background: #eef5ff; border-top: 1px solid #cfe0f5; font-size: 14px; color: var(--ink); min-height: 34px; }
 .voicebar[hidden] { display: none; }
 .voicebar .vi { color: var(--sub); }
+.voicebar .vctx { flex: none; background: #dc2626; color: #fff; font-weight: 700; padding: 2px 10px; border-radius: 8px; }
 .voicebar .vlogbtn { margin-left: auto; flex: none; }
 .vlog { max-height: 55vh; overflow: auto; border: 1px solid var(--line); border-radius: 10px; }
 .vlog table { width: 100%; border-collapse: collapse; font-size: 14px; }
@@ -226,6 +227,8 @@ dialog::backdrop { background: rgba(15, 23, 42, .35); }
 .chart td.p6 { background: var(--p6); color: var(--p6-ink); }
 .chart td.miss { background: repeating-linear-gradient(135deg, var(--miss) 0 4px, #f6f7f9 4px 8px); }
 .chart td.cur { box-shadow: inset 0 0 0 3px var(--cur); }
+.chart td.ctxrow { box-shadow: inset 0 -3px 0 #f87171; }
+.chart td.ctxrow.cur { box-shadow: inset 0 0 0 3px var(--cur); }
 /* 前回から引き継いだ未確定の値 */
 .chart td.c { color: #a7b0bb; font-weight: 500; font-style: italic; }
 .chart td.s.c.p4 { background: #fdf5d6; color: #c4a46a; }

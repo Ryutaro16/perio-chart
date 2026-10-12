@@ -144,7 +144,7 @@ const plaqueNone = (ex) => (ex.pcrNone !== undefined ? ex.pcrNone : !!ex.pcrDone
 const hasPlaque = (ex) => ALL.some((t) => Object.values(ex.teeth[t].pl).some(Boolean));
 
 function calcStats(ex) {
-  let present = 0, sites = 0, sum = 0, ge4 = 0, ge6 = 0, bop = 0, pl = 0, furT = 0;
+  let present = 0, sites = 0, sum = 0, ge4 = 0, ge6 = 0, bop = 0, pl = 0, furT = 0, bopAny = 0;
   for (const t of ALL) {
     const th = ex.teeth[t];
     if (th.missing) continue;
@@ -155,8 +155,8 @@ function calcStats(ex) {
       sites++; sum += v;
       if (v >= 4) ge4++;
       if (v >= 6) ge6++;
-      if (th.bop[k]) bop++;
     }
+    for (const k of SITES) if (th.bop[k]) bopAny++;
     for (const s of PL) if (th.pl[s]) pl++;
     if (Object.values(th.fur || {}).some((v) => v > 0)) furT++;
   }
@@ -165,7 +165,8 @@ function calcStats(ex) {
     mean: sites ? sum / sites : null,
     ge4pct: sites ? (ge4 / sites) * 100 : null,
     ge6: sites ? ge6 : null,
-    boppct: sites ? (bop / sites) * 100 : null,
+    // BOP％ ＝ 出血部位 ÷（現在歯数×6）。ポケットも出血も未入力なら未検査（—）
+    boppct: present && (sites || bopAny) ? (bopAny / (present * 6)) * 100 : null,
     // プラークが1面でもあれば計算。0面のときは「付着なし」を押した場合だけ0%、それ以外は未検査（—）
     pcr: present && (pl > 0 || plaqueNone(ex)) ? (pl / (present * 4)) * 100 : null,
     furT,
@@ -232,6 +233,7 @@ function chartHTML(exam, o = {}) {
     const v = th.ppd[k];
     if (v >= 6) c.push('p6'); else if (v >= 4) c.push('p4');
     if (o.cursor && o.cursor.t === t && o.cursor.k === k) c.push('cur');
+    if (o.ctx && quad(t) === o.ctx.q && k[0] === o.ctx.side) c.push('ctxrow');
     if (carried('ppd', t, k)) c.push('c');
     const dot = (type) => (th[type][k] ? `<i class="${type}${carried(type, t, k) ? ' c' : ''}"></i>` : '');
     // 前回との差（DIFF_MIN mm以上変わった部位だけ）。深くなった＝悪化、浅くなった＝改善
@@ -476,7 +478,7 @@ const ed = {
 };
 const PL_RANGES = [['all', '全顎'], ['1', '右上'], ['2', '左上'], ['3', '左下'], ['4', '右下']];
 const PL_FACES = [['m', '近心'], ['d', '遠心'], ['b', '頬側'], ['l', '舌側・口蓋側']];
-const MODES = [['ppd', 'ポケット'], ['mob', '動揺度'], ['fur', '分岐部'], ['pcr', 'プラーク']];
+const MODES = [['ppd', 'ポケット'], ['bop', '出血'], ['mob', '動揺度'], ['fur', '分岐部'], ['pcr', 'プラーク']];
 
 function nextOpen(list, i, dir, toothOf) {
   for (let j = i + dir; j >= 0 && j < list.length; j += dir) if (!ed.exam.teeth[toothOf(list[j])].missing) return j;
@@ -512,7 +514,8 @@ async function openEditor(examId) {
       <div class="grow"></div>
       <span id="savest" class="savest">保存済み</span>
       <button class="btn" id="difbtn" hidden></button>
-      <button class="btn mic" id="mic">🎤 音声入力</button>
+      <button class="btn mic" id="mic">🎤 ポケット</button>
+      <button class="btn mic" id="micbop">🎤 出血</button>
       <button class="btn" id="prt">印刷</button>
       <button class="btn primary" id="done">完了</button>
     </header>
@@ -526,7 +529,8 @@ async function openEditor(examId) {
   difbtn.hidden = !ed.prev;
   difbtn.onclick = () => { ed.showDiff = !ed.showDiff; refresh(); };
   const leave = async () => { voiceStop(true); await flushSave(); showPatient(patient.id); };
-  $('#mic').onclick = voiceToggle;
+  $('#mic').onclick = () => voiceToggle('ppd');
+  $('#micbop').onclick = () => voiceToggle('bop');
   $('#back').onclick = leave;
   $('#done').onclick = leave;
   $('#prt').onclick = async () => { await flushSave(); await printExam(patient, exam); };
@@ -541,6 +545,7 @@ function refresh() {
   const m = ed.mode;
   $('#chart').innerHTML = chartHTML(ed.exam, {
     cursor: m === 'ppd' ? ed.seq[ed.cur] : null,
+    ctx: voice.on && voice.mode === 'bop' ? voice.ctx : null,
     mobCursor: m === 'mob' ? MOB_SEQ[ed.mob] : null,
     furCursor: m === 'fur' ? FURC_SEQ[ed.fur] : null,
     prev: ed.showDiff ? ed.prev : null,
@@ -548,11 +553,11 @@ function refresh() {
   let diffNote = '';
   if (ed.prev) {
     const b = $('#difbtn');
-    b.textContent = ed.showDiff ? `✓ 前回（${fmtDate(ed.prev.date)}）との差` : '前回との差を表示';
+    b.textContent = ed.showDiff ? '✓ 前回比' : '前回比';
     b.classList.toggle('on', ed.showDiff);
     if (ed.showDiff) {
       const dc = diffCounts(ed.exam, ed.prev);
-      diffNote = `<span class="difnote">前回比（${DIFF_MIN}mm以上）：<i class="dif dn">−</i>改善 <b>${dc.better}</b>部位　<i class="dif up">+</i>悪化 <b>${dc.worse}</b>部位</span>`;
+      diffNote = `<span class="difnote">前回（${fmtDate(ed.prev.date)}）比・${DIFF_MIN}mm以上：<i class="dif dn">−</i>改善 <b>${dc.better}</b>部位　<i class="dif up">+</i>悪化 <b>${dc.worse}</b>部位</span>`;
     }
   }
   $('#stats').innerHTML = statsHTML(calcStats(ed.exam)) + diffNote;
@@ -594,6 +599,11 @@ function padHTML() {
         ${nav(`<button class="tool" data-act="missing">${toothName(c.t)}を欠損に</button>`)}
         ${fillGroup(ed.bulkVal, 1, 12)}
       </div>`;
+  } else if (ed.mode === 'bop') {
+    const n = ALL.reduce((a, t) => a + (T[t].missing ? 0 : SITES.filter((k) => T[t].bop[k]).length), 0);
+    body = `<div class="pad-status">${flashHTML()}<span>チャートのポケットの欄を<strong>タップすると出血</strong>が付きます。もう一度タップで外れます</span>
+        <span class="tip">いま出血 ${n}部位。声で入れるときは上の「🎤 出血」</span></div>
+      <div class="keys tools2"><button class="tool" data-act="bopclear">出血の記録をすべて消す</button><span></span></div>`;
   } else if (ed.mode === 'mob') {
     const t = MOB_SEQ[ed.mob];
     body = `<div class="pad-status">${flashHTML()}<span>入力中：<strong>${toothName(t)} の動揺度</strong></span></div>
@@ -684,6 +694,7 @@ function undoBulk(u) {
   const T = ed.exam.teeth;
   if (u.kind === 'ppd') for (const s of u.filled) delete T[s.t].ppd[s.k];
   if (u.kind === 'mob') for (const t of u.filled) T[t].mob = null;
+  if (u.kind === 'bopclear') { for (const [t, b] of u.before) T[t].bop = b; ed.flash = '出血の記録を元に戻しました'; return; }
   if (u.kind === 'voice') { undoVoiceOps(u.ops); if (voice.hist[voice.hist.length - 1] === u.ops) voice.hist.pop(); ed.flash = '音声の入力を取り消しました'; return; }
   if (u.kind === 'unmiss') { markMissing(u.t); ed.flash = `${toothName(u.t)}を欠損に戻しました`; return; }
   if (u.kind === 'pl') {
@@ -731,6 +742,14 @@ function onPadTap(e) {
     else if (act === 'missing') markMissing(c.t);
     else if (act === 'fill') { fillEmptyPPD(); ed.cur = firstEmpty(ed.seq, (s) => s.t, (s) => T[s.t].ppd[s.k] == null); }
     else return;
+    return touch();
+  }
+  if (ed.mode === 'bop') {
+    if (act !== 'bopclear') return;
+    const before = ALL.map((t) => [t, { ...T[t].bop }]);
+    for (const t of ALL) { T[t].bop = {}; for (const k of SITES) unCarry(ed.exam, 'bop', t, k); }
+    ed.undo = { kind: 'bopclear', before };
+    ed.flash = '出血の記録をすべて消しました';
     return touch();
   }
   if (ed.mode === 'mob') {
@@ -785,6 +804,7 @@ function onChartTap(e) {
   const cell = e.target.closest('[data-k]');
   if (cell) {
     const t = Number(cell.dataset.t), k = cell.dataset.k;
+    if (ed.mode === 'bop') { tapFlag('bop', t, k, T[t].bop); return touch(); }
     voice.lastSite = null;
     ed.mode = 'ppd';
     const i = ed.seq.findIndex((s) => s.t === t && s.k === k);
@@ -827,7 +847,7 @@ function onChartTap(e) {
 /* ================= 音声入力（ポケット） ================= */
 // Safari／Chrome の音声認識を使う。ホーム画面に追加したアプリでは使えない（Safari のタブで開く）
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-const voice = { rec: null, on: false, lastSite: null, endedSite: null, hist: [], interim: '', msg: '', prov: null, timer: null, log: [] };
+const voice = { mode: 'ppd', ctx: null, rec: null, on: false, lastSite: null, endedSite: null, hist: [], interim: '', msg: '', prov: null, timer: null, log: [] };
 const VOICE_EARLY_MS = 350; // 話している途中でも、この時間言葉が止まったら仮に入力する
 
 // ---- 速さの工夫：確定を待たずに仮入力し、確定した文が違えば入れ直す ----
@@ -853,13 +873,14 @@ function undoProv() {
     if (i >= 0) voice.hist.splice(i, 1);
   }
   ed.cur = p.cur; voice.lastSite = p.lastSite; voice.endedSite = p.endedSite;
+  if (p.ctx) voice.ctx = { ...p.ctx };
 }
 function voiceInterim(text) {
   if (voice.prov && sameSpeech(voice.prov.text, text)) return;
   clearTimeout(voice.timer);
   voice.timer = setTimeout(() => {
     undoProv();
-    const before = { cur: ed.cur, lastSite: voice.lastSite, endedSite: voice.endedSite };
+    const before = { cur: ed.cur, lastSite: voice.lastSite, endedSite: voice.endedSite, ctx: voice.ctx ? { ...voice.ctx } : null };
     const ops = handleSpeech(text, true);
     if (ops) voice.prov = { text, ops, ...before };
   }, VOICE_EARLY_MS);
@@ -903,7 +924,18 @@ function showVoiceLog() {
   $('#vlogTest').onclick = () => { closeDialog(); showVoiceTest(); };
 }
 
-function voiceToggle() { if (voice.on) voiceStop(); else voiceStart(); }
+// mode = 'ppd'（ポケット）／'bop'（出血だけ）。聞き取り中に別のボタンを押すとモードだけ切り替える
+function voiceToggle(mode = 'ppd') {
+  if (voice.on && voice.mode === mode) { voiceStop(); return; }
+  setVoiceMode(mode);
+  if (!voice.on) voiceStart(); else { voiceMsg(mode === 'bop' ? '「右上 頬側」「7 遠心 近心」のように話してください' : '「3、3、4プラス」のように話してください'); }
+}
+function setVoiceMode(mode) {
+  voice.mode = mode;
+  undoProv();
+  if (mode === 'bop') { const c = ed.seq[ed.cur]; voice.ctx = { q: quad(c.t), side: c.k[0] }; }
+  if (voice.on || mode === 'bop') { ed.mode = mode; refresh(); }
+}
 function voiceStart() {
   if (!SR) { voiceMsg('この画面では音声認識が使えません。iPadは Safari のタブで、Macは Safari か Chrome で開いてください'); return; }
   const r = new SR();
@@ -929,8 +961,9 @@ function voiceStart() {
   voice.lastSite = null;
   voice.endedSite = null;
   try { r.start(); } catch (err) { voice.on = false; voiceMsg('音声認識を開始できませんでした：' + esc(err.message)); return; }
-  if (ed.mode !== 'ppd') { ed.mode = 'ppd'; refresh(); }
-  voiceMsg('「3、3、4プラス」のように話してください');
+  const want = voice.mode === 'bop' ? 'bop' : 'ppd';
+  if (ed.mode !== want) { ed.mode = want; refresh(); }
+  voiceMsg(voice.mode === 'bop' ? '「右上 頬側」「7 遠心 近心」のように話してください' : '「3、3、4プラス」のように話してください');
 }
 function voiceStop(silent = false) {
   clearTimeout(voice.timer);
@@ -942,15 +975,18 @@ function voiceStop(silent = false) {
   if (r) try { r.stop(); } catch { /* 停止済み */ }
   if (silent) voice.msg = '';
   renderVoice();
+  if (view.name === 'editor' && $('#chart') && ed.exam) refresh(); // 出血だけモードの列の印を消す
 }
 function voiceMsg(m) { voice.msg = m; renderVoice(); }
 function renderVoice() {
   const b = $('#mic');
-  if (b) { b.classList.toggle('rec', voice.on); b.textContent = voice.on ? '● 聞き取り中（押すと停止）' : '🎤 音声入力'; }
+  if (b) { const on = voice.on && voice.mode !== 'bop'; b.classList.toggle('rec', on); b.textContent = on ? '● 聞き取り中' : '🎤 ポケット'; }
+  const bb = $('#micbop');
+  if (bb) { const on = voice.on && voice.mode === 'bop'; bb.classList.toggle('rec', on); bb.textContent = on ? '● 聞き取り中' : '🎤 出血'; }
   const v = $('#voicebar');
   if (!v) return;
   v.hidden = !voice.on && !voice.msg;
-  v.innerHTML = `${voice.on ? '<span class="vdot"></span>' : ''}<span class="vm">${voice.msg}</span>${voice.interim ? `<span class="vi">${esc(voice.interim)}…</span>` : ''}
+  v.innerHTML = `${voice.on ? '<span class="vdot"></span>' : ''}${voice.on && voice.mode === 'bop' && voice.ctx ? `<span class="vctx">出血入力中：${ctxLabel(voice.ctx)}</span>` : ''}<span class="vm">${voice.msg}</span>${voice.interim ? `<span class="vi">${esc(voice.interim)}…</span>` : ''}
     <button class="tool undo vlogbtn" id="vlog">聞き取りの記録</button><button class="tool undo" id="vtest">読み上げテスト</button>`;
   $('#vlog').onclick = showVoiceLog;
   $('#vtest').onclick = showVoiceTest;
@@ -966,7 +1002,7 @@ const SPEECH_FIX = [
   [/こうがい(?:側|そく|がわ)|口蓋がわ|[口公甲高校構郊工交広向好号後][外害蓋府布付凱街](?:側|そく|即|則|速|測|足|束|息)?/g, '口蓋側'],
   [/ぜっそく|ぜつそく|舌がわ|したがわ|[舌絶接][側速息則測足束底触]/g, '舌側'],
   [/きんしん|PC|ピーシー|[禁近金謹筋均菌][親心震振身新信森慎止進鍼]/g, '近心'], [/[遠延円炎園援演塩]後/g, '遠心 5'], [/えんしん|[遠延円炎園援演塩]\s*[CＣシ](?![a-zA-Z])|[遠延円炎園援演塩][心伸信陣進身親新震振鍼]/g, '遠心'], [/真ん中|まんなか|ちゅうおう|[中注宙柱忠][王央応]|(側)王/g, (m, sd) => (sd ? sd + '中央' : '中央')],
-  [/ぷらす|\+|クラス|グラス|ブラス/g, 'プラス'], [/まいなす/g, 'マイナス'], [/はいのう|排のう/g, '排膿'],
+  [/ぷらす|\+|クラス|グラス|ブラス/g, 'プラス'], [/ぜんぶ|全部|前部/g, '全部'], [/まいなす/g, 'マイナス'], [/はいのう|排のう/g, '排膿'],
 ];
 // 数字の読み。読みだけでできている部分（ひらがな・カタカナ・同じ音の漢字の並び）に限って数字に直す
 const KANA_NUM = [['きゅう', '9'], ['じゅういち', ' 11! '], ['じゅうに', ' 12! '], ['じゅう', ' 10! '], ['いち', '1'], ['よん', '4'], ['さん', '3'], ['ろく', '6'],
@@ -993,25 +1029,35 @@ function readNumbers(s) {
 function tokenizeSpeech(raw) {
   let s = raw.normalize('NFKC');
   for (const [re, to] of SPEECH_FIX) s = s.replace(re, to);
-  s = s.replace(/(右上|左上|右下|左下|頬側|口蓋側|舌側|近心|遠心|中央|プラス|マイナス|排膿)/g, ' $1 '); // 言葉の区切りをはっきりさせる
+  s = s.replace(/(右上|左上|右下|左下|頬側|口蓋側|舌側|近心|遠心|中央|全部|プラス|マイナス|排膿)/g, ' $1 '); // 言葉の区切りをはっきりさせる
   s = readNumbers(s);
   s = s.replace(/十([一二])?/g, (m, d) => ` ${10 + (d ? KD[d] : 0)}! `); // 「十」「十一」「十二」は2桁の数
   s = s.replace(/[〇零一二三四五六七八九]/g, (c) => KD[c]);
   s = s.replace(/[百千]/g, '');
-  const re = /(右上|左上|右下|左下)\s*の?\s*([1-8])|((?:右|左)(?![上下])\s*(?=[1-8])\d|(?:右上|左上|右下|左下))|(頬側|口蓋側|舌側)|(近心|遠心|中央)|(プラス|出血)|(マイナス)|(排膿)|(\d+!?)|(取り消し|取消し?|とりけし|取り消す)|(戻る|もどる)|(進む|すすむ|次|つぎ|スキップ)|(停止|ストップ|終了)/g;
+  const re = new RegExp([
+    '(?<q>右上|左上|右下|左下)\\s*の?\\s*(?<qd>[1-8])', // 歯（右上7など）
+    '(?<half>(?:右|左)(?![上下])\\s*[1-8])', // 上下が抜けた歯（右8など）
+    '(?<quad>右上|左上|右下|左下)', // 番号のないブロック名（出血だけモードでは列の指定）
+    '(?<side>頬側|口蓋側|舌側)', '(?<pos>近心|遠心|中央)', '(?<all>全部)',
+    '(?<plus>プラス|出血)', '(?<minus>マイナス)', '(?<pus>排膿)', '(?<num>\\d+!?)',
+    '(?<undo>取り消し|取消し?|とりけし|取り消す)', '(?<prev>戻る|もどる)', '(?<next>進む|すすむ|次|つぎ|スキップ)', '(?<stop>停止|ストップ|終了)',
+  ].join('|'), 'g');
+  const QB = { 右上: 1, 左上: 2, 左下: 3, 右下: 4 };
   const toks = [];
   let m;
   while ((m = re.exec(s))) {
-    // 番号は正規表現の（）の順：1-2 歯／3 上下が抜けた歯／4 側／5 部位／6 プラス／7 マイナス／8 排膿／9 数字／10-13 指示
-    if (m[1]) toks.push({ type: 'tooth', t: { 右上: 10, 左上: 20, 左下: 30, 右下: 40 }[m[1]] + Number(m[2]) });
-    else if (m[3]) toks.push({ type: 'badtooth' }); // 「右8」（上下が抜けた）や「左上」（番号が抜けた）
-    else if (m[4]) toks.push({ type: 'side', side: m[4] === '頬側' ? 'b' : 'l' });
-    else if (m[5]) toks.push({ type: 'pos', pos: { 近心: 'm', 遠心: 'd', 中央: 'c' }[m[5]] });
-    else if (m[6]) toks.push({ type: 'flag', field: 'bop', val: true, label: '出血＋' });
-    else if (m[7]) toks.push({ type: 'flag', field: 'bop', val: false, label: '出血なし' });
-    else if (m[8]) toks.push({ type: 'flag', field: 'pus', val: true, label: '排膿' });
-    else if (m[9]) {
-      const d = m[9];
+    const g = m.groups;
+    if (g.q) toks.push({ type: 'tooth', t: QB[g.q] * 10 + Number(g.qd) });
+    else if (g.half) toks.push({ type: 'badtooth' });
+    else if (g.quad) toks.push({ type: 'quad', q: QB[g.quad] });
+    else if (g.side) toks.push({ type: 'side', side: g.side === '頬側' ? 'b' : 'l' });
+    else if (g.pos) toks.push({ type: 'pos', pos: { 近心: 'm', 遠心: 'd', 中央: 'c' }[g.pos] });
+    else if (g.all) toks.push({ type: 'all' });
+    else if (g.plus) toks.push({ type: 'flag', field: 'bop', val: true, label: '出血＋' });
+    else if (g.minus) toks.push({ type: 'flag', field: 'bop', val: false, label: '出血なし' });
+    else if (g.pus) toks.push({ type: 'flag', field: 'pus', val: true, label: '排膿' });
+    else if (g.num) {
+      const d = g.num;
       const vals = [];
       if (d.endsWith('!')) vals.push(Number(d.slice(0, -1)));
       else for (let i = 0; i < d.length; i++) {
@@ -1019,10 +1065,10 @@ function tokenizeSpeech(raw) {
         if (d[i] === '1' && d[i + 1] === '0') { vals.push(10); i++; } else if (d[i] !== '0') vals.push(Number(d[i]));
       }
       if (vals.length) toks.push({ type: 'num', vals });
-    } else if (m[10]) toks.push({ type: 'undo' });
-    else if (m[11]) toks.push({ type: 'prev' });
-    else if (m[12]) toks.push({ type: 'next' });
-    else if (m[13]) toks.push({ type: 'stop' });
+    } else if (g.undo) toks.push({ type: 'undo' });
+    else if (g.prev) toks.push({ type: 'prev' });
+    else if (g.next) toks.push({ type: 'next' });
+    else if (g.stop) toks.push({ type: 'stop' });
   }
   return toks;
 }
@@ -1041,7 +1087,78 @@ function undoVoiceOps(ops) {
 
 // provisional = 確定前の仮入力。取り消し・移動などの指示を含むときは仮入力しない
 // dry = 読み上げテスト用の試し実行（画面・保存・取り消し履歴には触らない）
+// 出血だけモード：数字は歯の番号。「右上 頬側」で列を決め、「7 遠心 近心」でその列の部位に出血を付ける
+const QNAME = { 1: '右上', 2: '左上', 3: '左下', 4: '右下' };
+const ctxLabel = (c) => `${QNAME[c.q]} ${c.side === 'b' ? '頬側' : c.q <= 2 ? '口蓋側' : '舌側'}`;
+function handleBopSpeech(raw, provisional, dry) {
+  const toks = tokenizeSpeech(raw);
+  if (provisional && (!toks.length || toks.some((t) => ['undo', 'stop'].includes(t.type)))) return null;
+  const T = ed.exam.teeth, ctx = voice.ctx;
+  const ops = [], done = [];
+  let teeth = [], posSeen = false, last = [];
+  const set = (t, k, field, val) => {
+    ops.push({ t, k, field, old: T[t][field][k], oldCarry: isCarried(ed.exam, field, t, k) });
+    T[t][field][k] = val;
+    unCarry(ed.exam, field, t, k);
+  };
+  const apply = (poss) => {
+    if (!teeth.length) { done.push('歯の番号が聞き取れませんでした。入力していません'); return; }
+    const hit = [];
+    for (const t of teeth) for (const pos of poss) { set(t, ctx.side + pos, 'bop', true); hit.push({ t, k: ctx.side + pos }); }
+    last = hit;
+    posSeen = true;
+    done.push(`${teeth.map(toothName).join('・')} ${ctx.side === 'b' ? '頬' : teeth[0] < 30 ? '口蓋' : '舌'}${poss.map((p) => POS[p]).join('・')} 出血`);
+  };
+  const addTooth = (t) => {
+    if (posSeen) { teeth = []; posSeen = false; }
+    if (T[t].missing) { done.push(`${toothName(t)}は欠損です`); return; }
+    teeth.push(t);
+  };
+  const undoLast = () => {
+    if (ops.length) voice.hist.push(ops.splice(0));
+    const l = voice.hist.pop();
+    if (!l) { done.push('取り消せる入力がありません'); return; }
+    undoVoiceOps(l);
+    done.push('直前の音声入力を取り消しました');
+  };
+  for (const tk of toks) {
+    if (tk.type === 'quad') { ctx.q = tk.q; teeth = []; posSeen = false; done.push(`${ctxLabel(ctx)} へ`); }
+    else if (tk.type === 'side') {
+      ctx.side = tk.side; teeth = []; posSeen = false;
+      if (done.length && done[done.length - 1].endsWith(' へ')) done.pop();
+      done.push(`${ctxLabel(ctx)} へ`);
+    } else if (tk.type === 'tooth') { ctx.q = Math.floor(tk.t / 10); addTooth(tk.t); }
+    else if (tk.type === 'num') {
+      for (const d of tk.vals) {
+        if (d < 1 || d > 8) { done.push(`${d}番の歯はありません`); continue; }
+        addTooth(ctx.q * 10 + d);
+      }
+    } else if (tk.type === 'pos') apply([tk.pos]);
+    else if (tk.type === 'all') apply(['d', 'c', 'm']);
+    else if (tk.type === 'flag' && last.length && (tk.val === false || tk.field === 'pus')) {
+      // 直前に付けた部位の出血を外す（マイナス）／出血の代わりに排膿にする（排膿）
+      for (const { t, k } of last) {
+        const i = ops.findIndex((o) => o.t === t && o.k === k && o.field === 'bop');
+        if (i >= 0) { T[t].bop[k] = ops[i].old; if (!ops[i].old) delete T[t].bop[k]; ops.splice(i, 1); }
+        if (tk.field === 'pus') set(t, k, 'pus', true);
+        else set(t, k, 'bop', false);
+      }
+      done.push(tk.field === 'pus' ? '→ 排膿にしました' : '→ 出血を外しました');
+    } else if (tk.type === 'badtooth') { teeth = []; posSeen = false; done.push('歯の名前が聞き取れませんでした。入力していません'); }
+    else if (tk.type === 'undo') undoLast();
+    else if (tk.type === 'stop') { if (!dry) voiceStop(); }
+  }
+  if (dry) return { ops, done };
+  if (ops.length) { voice.hist.push(ops); ed.undo = { kind: 'voice', ops }; ed.flash = '音声で入力しました'; }
+  voice.lastResult = done.length ? done.join('、') : '入力できる言葉がありませんでした';
+  voice.msg = `<b>「${esc(raw.trim())}」</b> → ${esc(done.length ? done.slice(-8).join('、') : voice.lastResult)}`;
+  touch();
+  renderVoice();
+  return ops;
+}
+
 function handleSpeech(raw, provisional = false, dry = false) {
+  if (voice.mode === 'bop' && (dry || (view.name === 'editor' && ed.exam))) return handleBopSpeech(raw, provisional, dry);
   if (!dry && (view.name !== 'editor' || !ed.exam)) return null;
   const toks = tokenizeSpeech(raw);
   if (provisional && (!toks.length || toks.some((t) => ['undo', 'prev', 'next', 'stop'].includes(t.type)))) return null;
@@ -1083,7 +1200,7 @@ function handleSpeech(raw, provisional = false, dry = false) {
 
   for (const tk of toks) {
     if (tk.type === 'tooth') { moveToTarget(); blocked = false; target = { t: tk.t, side: null, pos: null, named: true }; }
-    else if (tk.type === 'badtooth') { target = null; blocked = true; done.push('歯の名前が聞き取れませんでした（上下か番号が抜けています）。入力していません'); }
+    else if (tk.type === 'badtooth' || tk.type === 'quad') { target = null; blocked = true; done.push('歯の名前が聞き取れませんでした（上下か番号が抜けています）。入力していません'); }
     else if (tk.type === 'side') { if (blocked) continue; target ||= { t: cur().t, side: null, pos: null }; target.side = tk.side; target.named = true; }
     else if (tk.type === 'pos') { if (blocked) continue; target ||= { t: cur().t, side: cur().k[0], pos: null }; target.pos = tk.pos; }
     else if (tk.type === 'num') {
