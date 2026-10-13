@@ -2521,7 +2521,7 @@ async function showPaperList() {
         <p class="sub">紙のチャート1枚（検査5回分まで）を撮影して、紙と同じ並びの表で確かめてから登録します。登録すると、カルテ番号の患者に検査が追加されます（いない患者は「No.番号」の名前で新しく作ります）。</p>
         <div class="row-tools">
           <label class="btn primary big">📷 撮影する・写真を選ぶ<input type="file" id="pphoto" class="vh" accept="image/*" capture="environment"></label>
-          <label class="btn">読み取り済みのファイルを読み込む<input type="file" id="pfile" class="vh" accept="application/json,.json"></label>
+          <label class="btn">読み取り済みのファイルを読み込む<input type="file" id="pfile" class="vh" accept="application/json,.json,text/plain,.txt"></label>
         </div>
         <p class="sub">数字は、写真を見ながら表に入力するか、Claude Code で写真から読み取ったファイルを読み込んでから、写真と見比べて直します。</p>
       </section>
