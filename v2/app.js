@@ -179,7 +179,8 @@ function calcStats(ex) {
     ge4pct: sites ? (ge4 / sites) * 100 : null,
     ge6: sites ? ge6 : null,
     // BOP％ ＝ 出血部位 ÷（現在歯数×6）。ポケットも出血も未入力なら未検査（—）
-    boppct: present && (sites || bopAny) ? (bopAny / (present * 6)) * 100 : null,
+    // 紙から取り込んだ検査は出血を取り込んでいないので、記録なし（—）
+    boppct: ex.source !== 'paper' && present && (sites || bopAny) ? (bopAny / (present * 6)) * 100 : null,
     // プラークが1面でもあれば計算。0面のときは「付着なし」を押した場合だけ0%、それ以外は未検査（—）
     pcr: present && (pl > 0 || plaqueNone(ex)) ? (pl / (present * 4)) * 100 : null,
     furT,
@@ -375,6 +376,7 @@ async function showList() {
       ${backupBanner(patients.length)}
       <div class="row-tools">
         <label class="searchbox"><svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M15.5 15.5 21 21" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg><input id="q" class="search" type="search" placeholder="氏名・ふりがな・カルテ番号で検索" autocomplete="off"></label>
+        <button class="btn big" id="paperp">📷 紙から取り込み</button>
         <button class="btn primary big" id="addp">＋ 新規患者</button>
       </div>
       ${patients.length > 1 ? `<div class="sortbar"><span class="sub">並べ方</span><div class="segtabs"><button class="seg${settings.patientSort === 'recent' ? '' : ' on'}" data-sort="kana">50音順</button><button class="seg${settings.patientSort === 'recent' ? ' on' : ''}" data-sort="recent">最近の検査順</button></div><span class="sub grow" id="pcount"></span></div>` : ''}
@@ -409,6 +411,7 @@ async function showList() {
     document.querySelectorAll('[data-sort]').forEach((x) => x.classList.toggle('on', x === b));
   }));
   $('#addp').onclick = () => patientDialog(null, (p) => showPatient(p.id));
+  $('#paperp').onclick = () => showPaperList();
   $('#plist').onclick = (e) => { const b = e.target.closest('[data-pid]'); if (b) showPatient(b.dataset.pid); };
 }
 
@@ -2426,6 +2429,360 @@ function makeDemo() {
   return { patient, exams };
 }
 
+/* ================= 紙のチャートから取り込み ================= */
+// 当院の紙（精密・再評価検査）：1枚に検査が最大5回分。1歯につき頬側2点・口蓋（舌）側2点のポケットと、動揺度1つ。
+// 斜線＝欠損、「C4」＝残根（欠損として取り込む）、［ ］＝ブリッジ（ポンティックは欠損、上の数字は支台歯の動揺度）。赤丸（BOP）は取り込まない。
+// 下書きは settings ストアに 'paper:ID' で保存する：
+//   { key, id, createdAt, updatedAt, chartNo, photo(Blob), source('ai'|'file'|'manual'), doneAt, patientId,
+//     exams: [{ dateText, date, teeth: { [歯]: { st:'ok'|'miss'|'c4', mob, b:[左,中,右], l:[左,中,右] } }, unsure: { '17:b0': true } }] }
+// b＝頬側の段、l＝上顎は口蓋の段・下顎は舌側の段。紙の1歯は点線で3マス。ふだんは両端（遠心・近心）に書き、深いときは真ん中（中央）にも書く。
+// [左,中,右] は紙の左→右の順（アプリの表示と同じ向き）
+const PAPER_ROWS_UP = [['mob', '動揺度'], ['b', '頬側'], ['l', '口蓋']];
+const PAPER_ROWS_LO = [['l', '舌側'], ['b', '頬側'], ['mob', '動揺度']];
+// 入力の順番（紙を上から読む順）：上顎 動揺度→頬側→口蓋、下顎 舌側→頬側→動揺度
+const PAPER_ORDER = [['U', 'mob'], ['U', 'b'], ['U', 'l'], ['L', 'l'], ['L', 'b'], ['L', 'mob']];
+const paperBlankTooth = () => ({ st: 'ok', mob: null, b: [null, null, null], l: [null, null, null] });
+function paperBlankExam() {
+  const teeth = {};
+  for (const t of ALL) teeth[t] = paperBlankTooth();
+  return { dateText: '', date: '', teeth, unsure: {} };
+}
+// 和暦「R7.4.9」「R.8.4.24」→ 2025-04-09（令和N年＝2018＋N年）
+function reiwaToISO(text) {
+  const m = String(text || '').normalize('NFKC').match(/(\d{1,2})\D+(\d{1,2})\D+(\d{1,2})/);
+  if (!m) return '';
+  const y = 2018 + Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return '';
+  return `${y}-${pad2(mo)}-${pad2(d)}`;
+}
+// 読み込んだ形（AI・ファイル）を、下書きの形にそろえる
+function paperNormalizeExam(x) {
+  const e = paperBlankExam();
+  e.dateText = String(x.dateText || x.date_text || '');
+  e.date = /^\d{4}-\d{2}-\d{2}$/.test(x.date || '') ? x.date : reiwaToISO(e.dateText);
+  const src = x.teeth || {};
+  const list = Array.isArray(src) ? src : Object.entries(src).map(([t, v]) => ({ ...v, tooth: t }));
+  const num = (v, max) => (Number.isInteger(v) && v >= 0 && v <= max ? v : null);
+  for (const v of list) {
+    const t = Number(v.tooth);
+    if (!e.teeth[t]) continue;
+    const st = v.st || ({ present: 'ok', missing: 'miss', c4: 'c4' })[v.status] || 'ok';
+    // 2つ＝[左,右]、3つ＝[左,中,右]
+    const trio = (a) => (!Array.isArray(a) ? [null, null, null] : a.length >= 3 ? [num(a[0], 15), num(a[1], 15), num(a[2], 15)] : [num(a[0], 15), null, num(a[1], 15)]);
+    const rb = v.b || v.buccal, rl = v.l || v.lingual;
+    e.teeth[t] = { st: ['ok', 'miss', 'c4'].includes(st) ? st : 'ok', mob: num(v.mob ?? v.mobility, 3), b: trio(rb), l: trio(rl) };
+    e.len = e.len || {};
+    e.len[t] = { b: Array.isArray(rb) ? rb.length : 2, l: Array.isArray(rl) ? rl.length : 2 };
+    for (const u of v.unsure || []) e.unsure[`${t}:${{ buccal_left: 'b0', buccal_center: 'b1', buccal_right: 'b2', lingual_left: 'l0', lingual_center: 'l1', lingual_right: 'l2', mobility: 'mob', status: 'st' }[u] || u}`] = true;
+  }
+  // ファイルの「歯:b1」は、その歯の値が2つなら右、3つなら真ん中
+  for (const u of x.unsure || []) {
+    if (typeof u !== 'string') continue;
+    const m = u.match(/^(\d+):([bl])([01])$/);
+    if (m && m[3] === '1' && (!e.len || !e.len[m[1]] || e.len[m[1]][m[2]] < 3)) e.unsure[`${m[1]}:${m[2]}2`] = true;
+    else e.unsure[u] = true;
+  }
+  delete e.len;
+  return e;
+}
+const paperDrafts = async () => (await DB.all('settings')).filter((r) => String(r.key).startsWith('paper:')).sort((a, b) => b.createdAt - a.createdAt);
+const savePaper = (d) => { d.updatedAt = Date.now(); return DB.put('settings', d); };
+function newPaperDraft(fields = {}) {
+  const id = uid();
+  return { key: `paper:${id}`, id, createdAt: Date.now(), updatedAt: Date.now(), chartNo: '', photo: null, source: 'manual', doneAt: null, patientId: null, exams: [paperBlankExam()], ...fields };
+}
+// 写真は長い辺 2576px までに縮めて保存する（AIで読める最大の大きさ。iPadの写真はそのままだと大きすぎる）
+async function shrinkPhoto(file, max = 2576) {
+  const bmp = await createImageBitmap(file);
+  const r = Math.min(1, max / Math.max(bmp.width, bmp.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(bmp.width * r); c.height = Math.round(bmp.height * r);
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+  return new Promise((res) => c.toBlob(res, 'image/jpeg', 0.9));
+}
+
+// ---- 取り込みの一覧 ----
+async function showPaperList() {
+  view = { name: 'paper' };
+  const drafts = await paperDrafts();
+  const row = (d) => {
+    const n = d.exams.length, uns = d.exams.reduce((s, e) => s + Object.keys(e.unsure || {}).length, 0);
+    return `<button class="prow" data-draft="${d.id}">
+      ${d.photo ? '<span class="avatar">📷</span>' : '<span class="avatar">📄</span>'}
+      <span class="pname">${d.chartNo ? `No.${esc(d.chartNo)}` : 'カルテ番号 未入力'}<small>${n}回分・${{ ai: 'AIで読み取り', file: 'ファイルから', manual: '手で入力' }[d.source] || ''}・${new Date(d.createdAt).toLocaleDateString('ja-JP')}</small></span>
+      <span class="pkeys">${d.doneAt ? '<span class="kchip ok">登録済み</span>' : uns ? `<span class="kchip warn">要確認 ${uns}か所</span>` : '<span class="kchip">確認中</span>'}</span>
+      <span class="chev">›</span></button>`;
+  };
+  app().innerHTML = `
+    <header class="bar"><button class="btn ghost" data-go="list">‹ 患者一覧</button><h1>紙のチャートから取り込み</h1><div class="grow"></div></header>
+    <main class="wrap stack">
+      <section class="card">
+        <h2>新しく取り込む</h2>
+        <p class="sub">紙のチャート1枚（検査5回分まで）を撮影して、紙と同じ並びの表で確かめてから登録します。登録すると、カルテ番号の患者に検査が追加されます（いない患者は「No.番号」の名前で新しく作ります）。</p>
+        <div class="row-tools">
+          <label class="btn primary big">📷 撮影する・写真を選ぶ<input type="file" id="pphoto" class="vh" accept="image/*" capture="environment"></label>
+          <label class="btn">読み取り済みのファイルを読み込む<input type="file" id="pfile" class="vh" accept="application/json,.json"></label>
+        </div>
+        <p class="sub">数字は、写真を見ながら表に入力するか、Claude Code で写真から読み取ったファイルを読み込んでから、写真と見比べて直します。</p>
+      </section>
+      <section class="card list">${drafts.length ? drafts.map(row).join('') : '<p class="empty">まだ取り込み中のものはありません</p>'}</section>
+    </main>`;
+  $('#pphoto').onchange = async (e) => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    const photo = await shrinkPhoto(f);
+    const d = newPaperDraft({ photo });
+    await savePaper(d);
+    await showPaperDraft(d.id);
+  };
+  $('#pfile').onchange = async (e) => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    if (f) await importPaperFile(f);
+  };
+  $('main').onclick = (e) => { const b = e.target.closest('[data-draft]'); if (b) showPaperDraft(b.dataset.draft); };
+}
+// Claude Code などで読み取ったファイル（1枚分、または sheets に複数枚）を下書きにする
+async function importPaperFile(file) {
+  let data;
+  try { data = JSON.parse(await file.text()); } catch { await notify('ファイルを読み込めませんでした。'); return; }
+  const sheets = data && data.kind === 'perio-paper' ? (data.sheets || [data]) : null;
+  if (!sheets) { await notify('紙のチャートの読み取りファイルではありません。'); return; }
+  let first = null;
+  for (const s of sheets) {
+    const d = newPaperDraft({ chartNo: String(s.chartNo || ''), source: 'file', exams: (s.exams || []).map(paperNormalizeExam) });
+    if (!d.exams.length) d.exams = [paperBlankExam()];
+    await savePaper(d);
+    first ||= d;
+  }
+  await notify(`${sheets.length}枚分を読み込みました。写真と見比べて確かめてから登録してください。`);
+  if (sheets.length === 1) showPaperDraft(first.id); else showPaperList();
+}
+
+// ---- 確認・修正の画面 ----
+const pd = { draft: null, ei: 0, sel: null, zoom: 1, url: null };
+async function showPaperDraft(id) {
+  const d = await DB.get('settings', `paper:${id}`);
+  if (!d) return showPaperList();
+  view = { name: 'paperdraft', id };
+  if (pd.url) URL.revokeObjectURL(pd.url);
+  Object.assign(pd, { draft: d, ei: 0, sel: null, url: d.photo ? URL.createObjectURL(d.photo) : null });
+  app().innerHTML = `
+    <header class="bar"><button class="btn ghost" id="pback">‹ 取り込み一覧</button>
+      <label class="hfield">カルテ番号 No.<input id="pno" value="${esc(d.chartNo)}" inputmode="numeric" autocomplete="off" placeholder="例：3927"></label>
+      <span class="sub" id="pmatch"></span><div class="grow"></div>
+      <label class="btn">${d.photo ? '写真を差し替え' : '📷 写真を付ける'}<input type="file" id="pphoto2" class="vh" accept="image/*" capture="environment"></label>
+      <button class="btn danger" id="pdel">削除</button>
+      <button class="btn primary" id="preg">${d.doneAt ? '登録済み' : '登録する'}</button></header>
+    <div class="paperwrap">
+      ${pd.url ? `<div class="pphoto" id="pph"><img src="${pd.url}" alt="紙のチャートの写真" id="pimg"></div>
+        <div class="pzoom"><button class="tool" data-zoom="-1">－</button><button class="tool" data-zoom="0">全体</button><button class="tool" data-zoom="1">＋</button><span class="sub">写真は指で動かせます。紙と見比べて、黄色の数字（自信がない所）から確かめてください</span></div>` : '<p class="sub pnophoto">写真がありません。「📷 写真を付ける」で付けると、見比べながら確かめられます。</p>'}
+      <div class="ptabs" id="ptabs"></div>
+      <div id="pgrid"></div>
+      <div class="pad ppad" id="ppad"></div>
+    </div>`;
+  $('#pback').onclick = () => showPaperList();
+  $('#pno').oninput = (e) => { d.chartNo = e.target.value.trim(); savePaper(d); paperMatch(); };
+  $('#pdel').onclick = async () => {
+    if (!(await askConfirm('この取り込みを削除しますか？（登録済みの検査は消えません）', '削除する', true))) return;
+    await DB.req(DB.store('settings', 'readwrite').delete(d.key));
+    showPaperList();
+  };
+  $('#preg').onclick = () => paperRegister();
+  $('#pphoto2').onchange = async (e) => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    d.photo = await shrinkPhoto(f);
+    await savePaper(d);
+    showPaperDraft(d.id);
+  };
+  document.querySelectorAll('[data-zoom]').forEach((b) => (b.onclick = () => {
+    const z = Number(b.dataset.zoom);
+    pd.zoom = z === 0 ? 1 : Math.max(1, Math.min(5, pd.zoom + z * 0.75));
+    $('#pimg').style.width = `${pd.zoom * 100}%`;
+  }));
+  paperMatch();
+  paperRender();
+  if ($('#pimg')) $('#pimg').onload = () => paperFocusPhoto();
+}
+async function paperMatch() {
+  const no = pd.draft.chartNo, el = $('#pmatch');
+  if (!el) return;
+  if (!no) { el.textContent = ''; return; }
+  const p = (await DB.all('patients')).find((x) => (x.chartNo || '').trim() === no);
+  el.innerHTML = p ? `→ ${esc(p.name)} 様に追加` : '→ 新しい患者「No.' + esc(no) + '」として登録';
+}
+// 写真を、今の回（・選んだ歯）のあたりへ動かす。紙の書式の大まかな位置から（1枚に5回分、表は横幅の約2割〜9.6割）
+function paperFocusPhoto() {
+  const box = $('#pph'), img = $('#pimg');
+  if (!box || !img || !img.naturalHeight) return;
+  if (pd.zoom < 1.6) { pd.zoom = 1.6; img.style.width = '160%'; }
+  const h = img.clientHeight, w = img.clientWidth;
+  const top = h * (0.04 + pd.ei * 0.18 + (pd.sel && pd.sel.t > 30 ? 0.085 : 0)) - 6; // 下顎を選んだら、その回の下半分へ
+  box.scrollTop = Math.max(0, top);
+  if (pd.sel) {
+    const row = (pd.sel.t > 30 ? LOWER : UPPER).indexOf(pd.sel.t);
+    const x = w * (0.22 + (row + 0.5) * (0.68 / 16));
+    box.scrollLeft = Math.max(0, x - box.clientWidth / 2);
+  }
+}
+function paperRender() {
+  const d = pd.draft, e = d.exams[pd.ei];
+  $('#ptabs').innerHTML = d.exams.map((x, i) => {
+    const u = Object.keys(x.unsure || {}).length;
+    return `<button class="seg${i === pd.ei ? ' on' : ''}" data-ei="${i}">${i + 1}回目 ${esc(x.dateText || (x.date ? fmtDate(x.date) : '日付なし'))}${u ? ` <i class="ubadge">${u}</i>` : ''}</button>`;
+  }).join('') + `<button class="seg add" data-ei="add">＋ 回を追加</button>
+    <span class="pdate">検査日 <input type="date" id="pdatein" value="${esc(e.date)}"> <input id="pdtext" value="${esc(e.dateText)}" placeholder="紙の日付（R7.4.9）" autocomplete="off"></span>
+    ${d.exams.length > 1 ? '<button class="tool undo" id="pdelex">この回を削除</button>' : ''}`;
+  $('#ptabs').querySelector('.seg.on')?.scrollIntoView({ inline: 'nearest', block: 'nearest' });
+  $('#pgrid').innerHTML = paperGridHTML(e);
+  $('#ppad').innerHTML = paperPadHTML();
+  $('#ptabs').onclick = (ev) => {
+    const b = ev.target.closest('[data-ei]');
+    if (!b) return;
+    if (b.dataset.ei === 'add') { d.exams.push(paperBlankExam()); pd.ei = d.exams.length - 1; } else pd.ei = Number(b.dataset.ei);
+    pd.sel = null; savePaper(d); paperRender(); paperFocusPhoto();
+  };
+  $('#pdatein').onchange = (ev) => { e.date = ev.target.value; savePaper(d); };
+  $('#pdtext').onchange = (ev) => { e.dateText = ev.target.value.trim(); if (!e.date) { e.date = reiwaToISO(e.dateText); $('#pdatein').value = e.date; } savePaper(d); paperRender(); };
+  if ($('#pdelex')) $('#pdelex').onclick = async () => {
+    if (!(await askConfirm(`${pd.ei + 1}回目を削除しますか？`, '削除する', true))) return;
+    d.exams.splice(pd.ei, 1); pd.ei = Math.max(0, pd.ei - 1); pd.sel = null; savePaper(d); paperRender();
+  };
+  $('#pgrid').onclick = (ev) => {
+    const st = ev.target.closest('[data-pst]');
+    if (st) { paperCycleStatus(Number(st.dataset.pst)); return; }
+    const c = ev.target.closest('[data-pc]');
+    if (!c) return;
+    const [t, r, i] = c.dataset.pc.split(':');
+    pd.sel = { t: Number(t), r, i: Number(i || 0) };
+    paperRender(); paperFocusPhoto();
+  };
+  $('#ppad').onclick = (ev) => { const b = ev.target.closest('[data-pk]'); if (b) paperKey(b.dataset.pk); };
+}
+const paperCellKey = (t, r, i) => (r === 'mob' ? `${t}:mob` : `${t}:${r}${i}`);
+function paperGridHTML(e) {
+  const jaw = (teeth, rows, up) => {
+    const head = `<tr class="pnum"><th></th>${teeth.map((t) => {
+      const s = e.teeth[t].st;
+      return `<th colspan="3" class="${s !== 'ok' ? 'gone' : ''}${e.unsure[`${t}:st`] ? ' unsure' : ''}${isMid(t) ? ' mid' : ''}" data-pst="${t}">${t % 10}${s === 'miss' ? '<small>欠損</small>' : s === 'c4' ? '<small>C4</small>' : ''}</th>`;
+    }).join('')}</tr>`;
+    const body = rows.map(([r, label]) => `<tr class="prow-${r}"><th>${label}</th>${teeth.map((t) => {
+      const th = e.teeth[t], gone = th.st !== 'ok';
+      const cell = (i) => {
+        const k = paperCellKey(t, r, i), v = r === 'mob' ? th.mob : th[r][i];
+        const on = pd.sel && pd.sel.t === t && pd.sel.r === r && (r === 'mob' || pd.sel.i === i);
+        return `<td ${r === 'mob' ? 'colspan="3" ' : ''}class="pc${i === 1 ? ' ctr' : ''}${on ? ' on' : ''}${e.unsure[k] ? ' unsure' : ''}${gone ? ' gone' : ''}${v >= 4 && r !== 'mob' ? (v >= 6 ? ' p6' : ' p4') : ''}${isMid(t) && (r === 'mob' || i === 0) ? ' mid' : ''}" data-pc="${t}:${r}:${i}">${gone ? '' : v ?? ''}</td>`;
+      };
+      return r === 'mob' ? cell(0) : cell(0) + cell(1) + cell(2);
+    }).join('')}</tr>`).join('');
+    const cols = `<colgroup><col class="lab">${teeth.map(() => '<col class="side"><col class="ctr"><col class="side">').join('')}</colgroup>`;
+    return `<table class="pgrid ${up ? 'up' : 'lo'}">${cols}${up ? body + head : head + body}</table>`;
+  };
+  return jaw(UPPER, PAPER_ROWS_UP, true) + jaw(LOWER, PAPER_ROWS_LO, false);
+}
+function paperPadHTML() {
+  const s = pd.sel, e = pd.draft.exams[pd.ei];
+  if (!s) return '<p class="sub phint">表の数字を押すと、ここで入力・修正できます。歯の番号を押すと「歯あり → 欠損 → C4」が切り替わります。</p>';
+  const th = e.teeth[s.t];
+  const where = `${toothName(s.t)} ${s.r === 'mob' ? '動揺度' : `${sideName(s.t, s.r)}の${['左', '真ん中', '右'][s.i]}`}`;
+  const nums = s.r === 'mob' ? [0, 1, 2, 3] : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+  return `<div class="pwhere">入力中：<b>${where}</b>${th.st !== 'ok' ? `<span class="sub">（${th.st === 'c4' ? 'C4' : '欠損'}の歯です）</span>` : ''}</div>
+    <div class="keys ${s.r === 'mob' ? 'n4' : 'n12'}">${nums.map((n) => `<button class="key${s.r !== 'mob' && n >= 6 ? ' hi6' : s.r !== 'mob' && n >= 4 ? ' hi4' : ''}" data-pk="${n}">${n}</button>`).join('')}</div>
+    <div class="row-tools"><button class="tool" data-pk="prev">◀ 戻る</button><button class="tool" data-pk="next">進む ▶</button><button class="tool" data-pk="clear">空欄に</button><button class="tool" data-pk="ok">この値で正しい（黄色を消す）</button></div>`;
+}
+// 次の入力欄（紙を読む順：同じ段を左→右、段の終わりで次の段へ。欠損の歯は飛ばす）
+function paperStep(dir) {
+  const e = pd.draft.exams[pd.ei], cells = [];
+  for (const [j, r] of PAPER_ORDER) for (const t of j === 'U' ? UPPER : LOWER) {
+    if (e.teeth[t].st !== 'ok') continue;
+    if (r === 'mob') cells.push({ t, r, i: 0 }); else cells.push({ t, r, i: 0 }, { t, r, i: 2 }); // 真ん中は飛ばす（書いてあるときだけ押して入れる）
+  }
+  const s = pd.sel;
+  if (s.i === 1) { pd.sel = { ...s, i: dir > 0 ? 2 : 0 }; return; } // 真ん中から：その歯の右（次）／左（前）へ
+  const at = cells.findIndex((c) => c.t === s.t && c.r === s.r && c.i === s.i);
+  const n = cells[at + dir];
+  if (n) pd.sel = n;
+}
+function paperKey(k) {
+  const d = pd.draft, e = d.exams[pd.ei], s = pd.sel;
+  if (!s) return;
+  const th = e.teeth[s.t], key = paperCellKey(s.t, s.r, s.i);
+  if (k === 'prev' || k === 'next') paperStep(k === 'next' ? 1 : -1);
+  else if (k === 'ok') delete e.unsure[key];
+  else if (k === 'clear') { if (s.r === 'mob') th.mob = null; else th[s.r][s.i] = null; delete e.unsure[key]; }
+  else {
+    const v = Number(k);
+    if (th.st !== 'ok') th.st = 'ok';
+    if (s.r === 'mob') th.mob = v; else th[s.r][s.i] = v;
+    delete e.unsure[key];
+    paperStep(1);
+  }
+  savePaper(d);
+  paperRender();
+}
+function paperCycleStatus(t) {
+  const d = pd.draft, e = d.exams[pd.ei], th = e.teeth[t];
+  th.st = { ok: 'miss', miss: 'c4', c4: 'ok' }[th.st];
+  delete e.unsure[`${t}:st`];
+  savePaper(d);
+  paperRender();
+}
+
+// ---- 登録：下書き → 患者・検査 ----
+// 紙の2点（遠心・近心）をアプリの6点に入れる。中央は2点の小さい方（2026-10-13 龍太郎の指定）
+function paperToExam(x, patientId) {
+  const ex = newExam(patientId, x.date, '', null);
+  for (const t of ALL) {
+    const p = x.teeth[t], th = ex.teeth[t];
+    if (!p || p.st !== 'ok') { th.missing = true; continue; }
+    th.mob = p.mob ?? null;
+    for (const side of ['b', 'l']) {
+      const [a, mid, b] = p[side];
+      const [dist, mes] = isPtRight(t) ? [a, b] : [b, a]; // 紙で左側の歯（患者の右）は左が遠心
+      if (dist != null) th.ppd[side + 'd'] = dist;
+      if (mes != null) th.ppd[side + 'm'] = mes;
+      // 中央：真ん中に書いてあればその値。なければ2点の小さい方
+      const c = mid != null ? mid : dist != null && mes != null ? Math.min(dist, mes) : dist ?? mes;
+      if (c != null) th.ppd[side + 'c'] = c;
+    }
+  }
+  ex.note = `紙のチャートから取り込み（${x.dateText || x.date}）`;
+  ex.source = 'paper';
+  return ex;
+}
+const paperHasData = (x) => ALL.some((t) => { const p = x.teeth[t]; return p.st === 'ok' && (p.mob != null || [...p.b, ...p.l].some((v) => v != null)); });
+async function paperRegister() {
+  const d = pd.draft;
+  if (!d.chartNo) { await notify('カルテ番号を入れてください。'); $('#pno').focus(); return; }
+  const patients = await DB.all('patients');
+  let p = patients.find((x) => (x.chartNo || '').trim() === d.chartNo);
+  const existing = p ? (await DB.byPatient(p.id)).filter((e) => !e.deletedAt) : [];
+  const plan = d.exams.map((x, i) => {
+    const why = !x.date ? '検査日がない' : !paperHasData(x) ? '数字がない' : existing.some((e) => e.date === x.date) ? 'この日の検査がすでにある' : '';
+    return { x, i, why };
+  });
+  const ok = plan.filter((r) => !r.why);
+  const uns = ok.reduce((s, r) => s + Object.keys(r.x.unsure || {}).length, 0);
+  if (!ok.length) { await notify(`登録できる回がありません。\n${plan.map((r) => `${r.i + 1}回目：${r.why}`).join('\n')}`); return; }
+  const msg = `${p ? `${p.name} 様（No.${d.chartNo}）` : `新しい患者「No.${d.chartNo}」`}に、検査を${ok.length}回分登録します。\n`
+    + plan.map((r) => `・${r.i + 1}回目 ${r.x.date ? fmtDate(r.x.date) : '日付なし'}${r.why ? `：登録しない（${r.why}）` : ''}`).join('\n')
+    + (uns ? `\n\n⚠ 黄色（自信がない所）が${uns}か所残っています。紙と見比べましたか？` : '')
+    + '\n\n中央の値は、紙の真ん中に書いてあればその値、なければ2点（遠心・近心）の小さい方を入れます。出血（赤丸）は取り込みません。';
+  if (!(await askConfirm(msg, '登録する'))) return;
+  if (!p) {
+    p = { id: uid(), chartNo: d.chartNo, name: `No.${d.chartNo}`, kana: '', birth: '', note: '紙のチャートから取り込み（氏名は未入力）', createdAt: Date.now(), updatedAt: Date.now() };
+    await DB.put('patients', p);
+  }
+  for (const r of ok) await DB.put('exams', paperToExam(r.x, p.id));
+  d.doneAt = Date.now(); d.patientId = p.id;
+  await savePaper(d);
+  await notify(`登録しました（${ok.length}回分）。${p.name.startsWith('No.') ? '患者画面の「患者情報を編集」で氏名を入れてください。' : ''}`);
+  showPatient(p.id);
+}
+
 /* ================= 新しいバージョンの確認 ================= */
 // プログラムのファイルが書き換わったら、画面上部にお知らせを出す（自動では再読み込みしない）
 const UPDATE_FILES = ['index.html', 'app.js', 'app.css'];
@@ -2468,6 +2825,8 @@ async function reopenView() {
   } else if (v && v.name === 'patient') await showPatient(v.pid, v.showDeleted);
   else if (v && v.name === 'settings') await showSettings();
   else if (v && v.name === 'voicetest') await showVoiceTest();
+  else if (v && v.name === 'paper') await showPaperList();
+  else if (v && v.name === 'paperdraft') await showPaperDraft(v.id);
   else await showList();
 }
 
