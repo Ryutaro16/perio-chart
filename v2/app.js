@@ -2550,8 +2550,11 @@ async function showPaperList() {
       <textarea id="ptext" class="text" rows="8" placeholder="ここを長押し →「ペースト」" style="font-family:monospace;font-size:13px"></textarea>
       <div class="dlg-actions"><button class="btn" data-close>キャンセル</button><button class="btn primary" id="ptextok">読み込む</button></div></div>`, true);
     $('#ptextok').onclick = async () => {
-      const t = $('#ptext').value.trim();
-      if (!t) return;
+      // メモなどから貼り付けると、引用符が “ ” に変わったり前後に文字が付いたりするので整える
+      let t = $('#ptext').value.replace(/[“”„]/g, '"').replace(/[‘’]/g, "'").trim();
+      const i = t.indexOf('{'), j = t.lastIndexOf('}');
+      if (i < 0 || j < i) { await notify('読み取った内容が見つかりません。{"kind":"perio-paper" で始まる文字をすべて貼り付けてください。'); return; }
+      t = t.slice(i, j + 1);
       closeDialog();
       await importPaperFile(new File([t], 'paste.txt', { type: 'text/plain' }));
     };
