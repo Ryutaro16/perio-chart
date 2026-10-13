@@ -2522,6 +2522,7 @@ async function showPaperList() {
         <div class="row-tools">
           <label class="btn primary big">📷 撮影する・写真を選ぶ<input type="file" id="pphoto" class="vh" accept="image/*" capture="environment"></label>
           <label class="btn">読み取り済みのファイルを読み込む<input type="file" id="pfile" class="vh" accept="application/json,.json,text/plain,.txt"></label>
+          <button class="btn" id="ppaste">貼り付けで読み込む</button>
         </div>
         <p class="sub">数字は、写真を見ながら表に入力するか、Claude Code で写真から読み取ったファイルを読み込んでから、写真と見比べて直します。</p>
       </section>
@@ -2542,6 +2543,19 @@ async function showPaperList() {
     if (f) await importPaperFile(f);
   };
   $('main').onclick = (e) => { const b = e.target.closest('[data-draft]'); if (b) showPaperDraft(b.dataset.draft); };
+  // ファイルを渡せないとき：読み取った内容（文字）をコピーして、ここに貼り付ける
+  $('#ppaste').onclick = () => {
+    openDialog(`<div class="dlg-body"><h2>貼り付けで読み込む</h2>
+      <p class="sub">読み取った内容（{"kind":"perio-paper" で始まる文字）をコピーして、下の欄に貼り付けてください。</p>
+      <textarea id="ptext" class="text" rows="8" placeholder="ここを長押し →「ペースト」" style="font-family:monospace;font-size:13px"></textarea>
+      <div class="dlg-actions"><button class="btn" data-close>キャンセル</button><button class="btn primary" id="ptextok">読み込む</button></div></div>`, true);
+    $('#ptextok').onclick = async () => {
+      const t = $('#ptext').value.trim();
+      if (!t) return;
+      closeDialog();
+      await importPaperFile(new File([t], 'paste.txt', { type: 'text/plain' }));
+    };
+  };
 }
 // Claude Code などで読み取ったファイル（1枚分、または sheets に複数枚）を下書きにする
 async function importPaperFile(file) {
