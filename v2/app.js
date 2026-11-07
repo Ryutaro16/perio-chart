@@ -30,7 +30,7 @@ const isMolar = (t) => t % 10 >= 6;
 const toothName = (t) => ({ 1: '右上', 2: '左上', 3: '左下', 4: '右下' })[quad(t)] + (t % 10);
 const sideName = (t, side) => (side === 'b' ? '頬側' : isUpper(t) ? '口蓋側' : '舌側');
 const POS = { d: '遠心', c: '中央', m: '近心' };
-const siteName = (t, k) => `${toothName(t)}　${sideName(t, k[0])} ${POS[k[1]]}`;
+const siteName = (t, k) => (k === 'x' ? `${toothName(t)}　いちばん深い所` : `${toothName(t)}　${sideName(t, k[0])} ${POS[k[1]]}`);
 // 画面の左→右の順に並べた部位キー
 const screenKeys = (t, side) => (isPtRight(t) ? [side + 'd', side + 'c', side + 'm'] : [side + 'm', side + 'c', side + 'd']);
 
@@ -70,6 +70,11 @@ function buildSeq(order) {
 }
 const MOB_SEQ = [...UPPER, ...[...LOWER].reverse()];
 const FURC_SEQ = MOB_SEQ.filter(isMolar).flatMap((t) => furcKeys(t).map((f) => ({ t, f })));
+// 基本検査：ポケットは1歯1点（いちばん深い所。部位キー 'x'）＋動揺度＋出血。精密検査は6点（kind なし）
+const isBasic = (ex) => !!ex && ex.kind === 'basic';
+const examSites = (ex) => (isBasic(ex) ? ['x'] : SITES);
+const kindName = (ex) => (isBasic(ex) ? '基本検査' : '精密検査');
+const buildBasicSeq = () => MOB_SEQ.map((t) => ({ t, k: 'x' })); // 右上8→左上8 → 左下8→右下8
 
 /* ================= データベース（IndexedDB） ================= */
 const DB = {
@@ -114,8 +119,9 @@ const saveSettings = () => DB.put('settings', settings);
 
 /* ================= 検査データ ================= */
 const blankTooth = () => ({ missing: false, mob: null, ppd: {}, bop: {}, pus: {}, pl: {}, fur: {} });
-function newExam(patientId, date, examiner, prev, carryOver = false) {
+function newExam(patientId, date, examiner, prev, carryOver = false, kind = 'precise') {
   const teeth = {};
+  if (prev && isBasic(prev) !== (kind === 'basic')) carryOver = false; // 種類が違う検査からは値を写さない（欠損歯だけ）
   const carry = { ppd: {}, bop: {}, pus: {}, mob: {}, fur: {}, pl: {} };
   for (const t of ALL) {
     teeth[t] = blankTooth();
@@ -125,7 +131,7 @@ function newExam(patientId, date, examiner, prev, carryOver = false) {
     if (!carryOver) continue;
     // 前回の値を写し、「引き継ぎ（未確定）」の印を付ける
     const th = teeth[t];
-    for (const k of SITES) {
+    for (const k of examSites(prev)) {
       if (pt.ppd[k] != null) { th.ppd[k] = pt.ppd[k]; carry.ppd[ck(t, k)] = true; }
       if (pt.bop[k]) { th.bop[k] = true; carry.bop[ck(t, k)] = true; }
       if (pt.pus[k]) { th.pus[k] = true; carry.pus[ck(t, k)] = true; }
@@ -135,7 +141,7 @@ function newExam(patientId, date, examiner, prev, carryOver = false) {
     for (const f of PL) if (pt.pl[f]) { th.pl[f] = true; carry.pl[ck(t, f)] = true; }
   }
   return {
-    id: uid(), patientId, date, examiner, note: '', teeth, pcrNone: false, carry, carriedFrom: carryOver && prev ? prev.date : null,
+    id: uid(), patientId, date, examiner, note: '', teeth, ...(kind === 'basic' ? { kind: 'basic' } : {}), pcrNone: false, carry, carriedFrom: carryOver && prev ? prev.date : null,
     createdAt: Date.now(), updatedAt: Date.now(), deletedAt: null,
   };
 }
@@ -158,43 +164,45 @@ const hasPlaque = (ex) => ALL.some((t) => Object.values(ex.teeth[t].pl).some(Boo
 
 function calcStats(ex) {
   let present = 0, sites = 0, sum = 0, ge4 = 0, ge6 = 0, bop = 0, pl = 0, furT = 0, bopAny = 0;
+  const ks = examSites(ex);
   for (const t of ALL) {
     const th = ex.teeth[t];
     if (th.missing) continue;
     present++;
-    for (const k of SITES) {
+    for (const k of ks) {
       const v = th.ppd[k];
       if (v == null) continue;
       sites++; sum += v;
       if (v >= 4) ge4++;
       if (v >= 6) ge6++;
     }
-    for (const k of SITES) if (th.bop[k]) bopAny++;
+    for (const k of ks) if (th.bop[k]) bopAny++;
     for (const s of PL) if (th.pl[s]) pl++;
     if (Object.values(th.fur || {}).some((v) => v > 0)) furT++;
   }
   return {
-    present, sites,
+    present, sites, basic: isBasic(ex), perTooth: ks.length,
     mean: sites ? sum / sites : null,
     ge4pct: sites ? (ge4 / sites) * 100 : null,
     ge6: sites ? ge6 : null,
     // BOP％ ＝ 出血部位 ÷（現在歯数×6）。ポケットも出血も未入力なら未検査（—）
     // 紙から取り込んだ検査は出血を取り込んでいないので、記録なし（—）
-    boppct: ex.source !== 'paper' && present && (sites || bopAny) ? (bopAny / (present * 6)) * 100 : null,
+    boppct: ex.source !== 'paper' && present && (sites || bopAny) ? (bopAny / (present * ks.length)) * 100 : null,
     // プラークが1面でもあれば計算。0面のときは「付着なし」を押した場合だけ0%、それ以外は未検査（—）
     pcr: present && (pl > 0 || plaqueNone(ex)) ? (pl / (present * 4)) * 100 : null,
     furT,
   };
 }
 function statsHTML(s) {
+  const u = s.basic ? '歯' : '部位'; // 基本検査は1歯1点なので「歯」で数える
   return `<span>現在歯数 <b>${s.present}</b></span>
-    <span>測定部位 <b>${s.sites}</b> / ${s.present * 6}</span>
+    <span>${s.basic ? '測定した歯' : '測定部位'} <b>${s.sites}</b> / ${s.present * s.perTooth}</span>
     <span>平均PPD <b>${s.mean == null ? '—' : s.mean.toFixed(1)}</b>${s.mean == null ? '' : 'mm'}</span>
     <span>4mm以上 <b>${fmtPct(s.ge4pct)}</b></span>
-    <span>6mm以上 <b>${s.ge6 == null ? '—' : s.ge6}</b>部位</span>
+    <span>6mm以上 <b>${s.ge6 == null ? '—' : s.ge6}</b>${u}</span>
     <span>BOP <b>${fmtPct(s.boppct)}</b></span>
-    <span>PCR <b>${fmtPct(s.pcr)}</b></span>
-    <span>分岐部病変 <b>${s.furT}</b>歯</span>`;
+    ${s.basic ? '' : `<span>PCR <b>${fmtPct(s.pcr)}</b></span>
+    <span>分岐部病変 <b>${s.furT}</b>歯</span>`}`;
 }
 
 /* ================= チャート描画 ================= */
@@ -212,10 +220,11 @@ const DIFF_MIN = 2; // 前回との差を表示する変化の大きさ（mm）
 function diffCounts(ex, prev) {
   let better = 0, worse = 0;
   if (!prev) return { better, worse };
+  if (isBasic(prev) !== isBasic(ex)) return { better, worse, other: true }; // 基本と精密は測り方が違うので比べない
   for (const t of ALL) {
     const th = ex.teeth[t], pt = prev.teeth[t];
     if (th.missing || !pt || pt.missing) continue;
-    for (const k of SITES) {
+    for (const k of examSites(ex)) {
       if (th.ppd[k] == null || pt.ppd[k] == null) continue;
       const d = th.ppd[k] - pt.ppd[k];
       if (d >= DIFF_MIN) worse++; else if (d <= -DIFF_MIN) better++;
@@ -224,9 +233,10 @@ function diffCounts(ex, prev) {
   return { better, worse };
 }
 // その検査より前の、いちばん新しい検査
-async function findPrevExam(ex) {
+async function findPrevExam(ex, sameKind = false) {
   const list = (await DB.byPatient(ex.patientId))
     .filter((e) => !e.deletedAt && e.id !== ex.id && (e.date < ex.date || (e.date === ex.date && e.createdAt < ex.createdAt)))
+    .filter((e) => !sameKind || isBasic(e) === isBasic(ex))
     .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt);
   return list[0] || null;
 }
@@ -286,6 +296,28 @@ function chartHTML(exam, o = {}) {
     return [th.mob ?? '', `data-mob="${t}"`];
   });
   const pcrRow = (row) => toothRow(row, 'pcr', 'プラーク', (t, th) => (th.missing ? ['', ''] : [pcrSVG(t, th, o.print ? null : exam), '']));
+  if (isBasic(exam)) { // 基本検査：1歯1点のポケット（出血・排膿の印つき）と動揺度
+    const basicRow = (row) => toothRow(row, 's bx', 'ポケット', (t, th, c) => {
+      if (th.missing) return ['', ''];
+      const v = th.ppd.x;
+      if (v >= 6) c.push('p6'); else if (v >= 4) c.push('p4');
+      if (o.cursor && o.cursor.t === t) c.push('cur');
+      if (carried('ppd', t, 'x')) c.push('c');
+      const dot = (type) => (th[type].x ? `<i class="${type}${carried(type, t, 'x') ? ' c' : ''}"></i>` : '');
+      let dif = '';
+      const pt = o.prev && isBasic(o.prev) && o.prev.teeth[t];
+      if (pt && !pt.missing && pt.ppd.x != null && v != null && Math.abs(v - pt.ppd.x) >= DIFF_MIN) {
+        const d = v - pt.ppd.x;
+        dif = `<i class="dif ${d > 0 ? 'up' : 'dn'}">${d > 0 ? '+' : '−'}${Math.abs(d)}</i>`;
+      }
+      return [`${v ?? ''}${dot('bop')}${dot('pus')}${dif}`, `data-t="${t}" data-k="x"`];
+    });
+    return `<table class="chart basic${o.mini ? ' compact' : ''}"><colgroup><col class="labc">${'<col>'.repeat(48)}</colgroup>
+      ${mobRow(UPPER)}${basicRow(UPPER)}${numRow(UPPER, '上顎')}
+      <tr class="gap"><td colspan="49"></td></tr>
+      ${numRow(LOWER, '下顎')}${basicRow(LOWER)}${mobRow(LOWER)}
+    </table>`;
+  }
 
   return `<table class="chart${o.mini ? ' compact' : ''}"><colgroup><col class="labc">${'<col>'.repeat(48)}</colgroup>
     ${pcrRow(UPPER)}${mobRow(UPPER)}${furRow(UPPER, 'b')}${ppdRow(UPPER, 'b', '頬側')}${numRow(UPPER, '上顎')}${ppdRow(UPPER, 'l', '口蓋側')}${furRow(UPPER, 'l')}
@@ -329,7 +361,7 @@ function notify(msg) {
 
 document.addEventListener('click', (e) => {
   const g = e.target.closest('[data-go]');
-  if (g) { if (g.dataset.go === 'list') showList(); else if (g.dataset.go === 'settings') showSettings(); return; }
+  if (g) { if (g.dataset.go === 'list') showList(); else if (g.dataset.go === 'settings') openSettingsFrom(); return; }
   if (e.target.closest('[data-act="backup"]')) exportBackup();
 });
 
@@ -341,6 +373,10 @@ function backupBanner(n) {
   return `<div class="banner">${days === null ? 'まだバックアップがありません。' : `最後のバックアップから${days}日経っています。`}
     iPadの故障・紛失に備えて、院内PCへ保存してください。<button class="btn" data-act="backup">今すぐバックアップ</button></div>`;
 }
+
+// 設定マーク（どの画面からでも設定を開き、戻ると元の画面へ）
+const GEAR_SVG = '<svg aria-hidden="true" viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M19.4 13a7.6 7.6 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.4 7.4 0 0 0-1.7-1l-.4-2.6h-4l-.4 2.6a7.4 7.4 0 0 0-1.7 1l-2.5-1-2 3.5L4.6 11a7.6 7.6 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1a7.4 7.4 0 0 0 1.7 1l.4 2.6h4l.4-2.6a7.4 7.4 0 0 0 1.7-1l2.5 1 2-3.5L19.4 13ZM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z"/></svg>';
+const gearBtn = (label = true) => `<button class="btn ghost gear" data-go="settings" aria-label="設定" title="設定">${GEAR_SVG}${label ? '<span>設定</span>' : ''}</button>`;
 
 /* ================= 患者一覧 ================= */
 async function showList() {
@@ -358,7 +394,8 @@ async function showList() {
   const KEY = [['boppct', 'BOP'], ['ge4pct', '4mm以上']];
   for (const i of Object.values(info)) {
     i.list.sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt);
-    const [s0, s1] = i.list.slice(0, 2).map(calcStats);
+    const p1 = i.list.slice(1).find((e) => isBasic(e) === isBasic(i.list[0])); // 前回比は同じ種類の検査と
+    const s0 = calcStats(i.list[0]), s1 = p1 ? calcStats(p1) : null;
     i.keys = KEY.map(([k, l]) => {
       const v = s0[k], pv = s1 ? s1[k] : null;
       const d = v == null || pv == null ? 0 : Math.round(v) - Math.round(pv);
@@ -371,7 +408,7 @@ async function showList() {
     : byKana);
   sortPatients();
   app().innerHTML = `
-    <header class="bar brandbar"><span class="logo" aria-hidden="true"></span><h1>ペリオチャート <span class="ver">v2</span></h1><div class="grow"></div><button class="btn ghost" data-go="settings">設定・バックアップ</button></header>
+    <header class="bar brandbar"><span class="logo" aria-hidden="true"></span><h1>ペリオチャート <span class="ver">v2</span></h1><div class="grow"></div>${gearBtn()}</header>
     <main class="wrap">
       ${backupBanner(patients.length)}
       <div class="row-tools">
@@ -448,22 +485,23 @@ function historyCardHTML(e, prev) {
   const mid = s.sites ? s.ge4pct - ge6pct : null;
   const dc = diffCounts(e, prev);
   return `<section class="hcard">
-    <div class="hhead"><b>${fmtDate(e.date)}</b>${e.examiner ? `<span class="sub">検査者：${esc(e.examiner)}</span>` : ''}
-      ${prev ? `<span class="sub">前回 ${fmtDate(prev.date)} との差：<i class="dif dn">−</i>改善 ${dc.better}部位　<i class="dif up">+</i>悪化 ${dc.worse}部位</span>` : '<span class="sub">初回の検査</span>'}
+    <div class="hhead"><b>${fmtDate(e.date)}</b>${isBasic(e) ? '<span class="kindtag">基本検査</span>' : ''}${e.examiner ? `<span class="sub">検査者：${esc(e.examiner)}</span>` : ''}
+      ${!prev ? '<span class="sub">初回の検査</span>' : dc.other ? `<span class="sub">前回 ${fmtDate(prev.date)} は${kindName(prev)}（測り方が違うので差は出しません）</span>` : `<span class="sub">前回 ${fmtDate(prev.date)} との差：<i class="dif dn">−</i>改善 ${dc.better}${isBasic(e) ? '歯' : '部位'}　<i class="dif up">+</i>悪化 ${dc.worse}${isBasic(e) ? '歯' : '部位'}</span>`}
       <div class="grow"></div><button class="btn" data-open="${e.id}">開く</button><button class="btn" data-print="${e.id}">印刷</button></div>
     <div class="hchart">${chartHTML(e, { prev, mini: true })}</div>
     <div class="hstats">
-      <span>PCR <b>${fmtPct(s.pcr)}</b></span><span>BOP <b>${fmtPct(s.boppct)}</b></span>
+      ${s.basic ? '' : `<span>PCR <b>${fmtPct(s.pcr)}</b></span>`}<span>BOP <b>${fmtPct(s.boppct)}</b></span>
       <span>PPD 〜3mm <b>${fmtPct(le3)}</b>・4〜5mm <b>${fmtPct(mid)}</b>・6mm以上 <b>${fmtPct(ge6pct)}</b></span>
       <span>平均PPD <b>${s.mean == null ? '—' : s.mean.toFixed(1)}</b>${s.mean == null ? '' : 'mm'}</span>
-      <span>現在歯数 <b>${s.present}</b>本</span><span>分岐部病変 <b>${s.furT}</b>歯</span>
+      <span>現在歯数 <b>${s.present}</b>本</span>${s.basic ? '' : `<span>分岐部病変 <b>${s.furT}</b>歯</span>`}
     </div>
   </section>`;
 }
 // 患者画面の上の要点：最新の検査の4つの数値と、前回からの変化（改善＝青▼、悪化＝橙▲）
 function kpiHTML(live) {
   if (!live.length) return '';
-  const [s0, s1] = live.slice(0, 2).map(calcStats);
+  const p1 = live.slice(1).find((e) => isBasic(e) === isBasic(live[0])); // 前回比は同じ種類の検査と
+  const s0 = calcStats(live[0]), s1 = p1 ? calcStats(p1) : null;
   const tiles = ['boppct', 'ge4pct', 'pcr', 'mean'].map((k) => {
     const m = TRENDS.find((x) => x.key === k);
     const v = s0[k], pv = s1 ? s1[k] : null;
@@ -475,7 +513,7 @@ function kpiHTML(live) {
     }
     return `<div class="kpi"><span>${m.label}</span><b>${fmtTrend(m, v)}</b>${d}</div>`;
   }).join('');
-  return `<div class="kpis"><div class="kpicap">最新 ${fmtDate(live[0].date)}${live[1] ? `<small>前回 ${fmtDate(live[1].date)} と比べて</small>` : ''}</div>${tiles}</div>`;
+  return `<div class="kpis"><div class="kpicap">最新 ${fmtDate(live[0].date)}${isBasic(live[0]) ? '（基本検査）' : ''}${p1 ? `<small>前回 ${fmtDate(p1.date)} と比べて</small>` : ''}</div>${tiles}</div>`;
 }
 async function showPatient(pid, showDeleted = false) {
   const p = await DB.get('patients', pid);
@@ -485,15 +523,15 @@ async function showPatient(pid, showDeleted = false) {
   const live = exams.filter((e) => !e.deletedAt), dead = exams.filter((e) => e.deletedAt);
   const rows = (showDeleted ? dead : live).map((e) => {
     const s = calcStats(e);
-    return `<tr><td class="d">${fmtDate(e.date)}</td><td>${s.present}</td><td>${s.mean == null ? '—' : s.mean.toFixed(1)}</td>
-      <td>${fmtPct(s.ge4pct)}</td><td>${s.ge6 == null ? '—' : s.ge6}</td><td>${fmtPct(s.boppct)}</td><td>${fmtPct(s.pcr)}</td><td>${s.furT}</td>
+    return `<tr><td class="d">${fmtDate(e.date)}${isBasic(e) ? '<span class="kindtag">基本</span>' : ''}</td><td>${s.present}</td><td>${s.mean == null ? '—' : s.mean.toFixed(1)}</td>
+      <td>${fmtPct(s.ge4pct)}</td><td>${s.ge6 == null ? '—' : s.ge6}</td><td>${fmtPct(s.boppct)}</td><td>${s.basic ? '—' : fmtPct(s.pcr)}</td><td>${s.basic ? '—' : s.furT}</td>
       <td>${esc(e.examiner || '')}</td>
       <td class="acts">${showDeleted
         ? `<button class="btn" data-restore="${e.id}">元に戻す</button>`
         : `<button class="btn primary" data-open="${e.id}">開く</button><button class="btn" data-print="${e.id}">印刷</button><button class="btn danger" data-del="${e.id}">削除</button>`}</td></tr>`;
   }).join('');
   app().innerHTML = `
-    <header class="bar"><button class="btn ghost" data-go="list">‹ 患者一覧</button><div class="grow"></div><button class="btn" id="editp">患者情報を編集</button></header>
+    <header class="bar"><button class="btn ghost" data-go="list">‹ 患者一覧</button><div class="grow"></div>${gearBtn()}<button class="btn" id="editp">患者情報を編集</button></header>
     <main class="wrap">
       <div class="card pinfo"><div class="pn">${esc(p.name)} <small>様</small></div><div class="pk">${esc(p.kana || '')}</div>
         <dl><div><dt>カルテ番号</dt><dd>${esc(p.chartNo || '—')}</dd></div>
@@ -539,17 +577,35 @@ async function showPatient(pid, showDeleted = false) {
 }
 
 function newExamDialog(p, prev) {
+  const kind0 = settings.lastKind === 'basic' ? 'basic' : 'precise';
+  const kindOpt = (v, l, d) => `<label class="kindopt"><input type="radio" name="kind" value="${v}" ${kind0 === v ? 'checked' : ''}><span><b>${l}</b><small>${d}</small></span></label>`;
   openDialog(`<form class="dlg-body" id="nf"><h2>新しい検査</h2>
+    <div class="field"><span>検査の種類</span><div class="kindopts">
+      ${kindOpt('precise', '精密検査', '6点法。ポケット・出血・排膿・動揺度・分岐部・プラーク')}
+      ${kindOpt('basic', '基本検査', '1歯1点（いちばん深い所）。ポケット・出血・排膿・動揺度')}</div></div>
     <label class="field"><span>検査日</span><input type="date" name="date" value="${today()}" required></label>
     <label class="field"><span>検査者</span><input name="examiner" value="${esc(settings.lastExaminer)}" autocomplete="off"></label>
-    ${prev ? `<label class="check"><input type="checkbox" name="carry"><span>前回（${fmtDate(prev.date)}）のデータを引き継ぐ
-        <small>ポケット・出血・排膿・動揺度・分岐部・プラーク。引き継いだ値は薄い色で表示され、確定するまで「未確定」になります</small></span></label>
-      <p class="hint">欠損歯は前回から自動で引き継ぎます。</p>` : ''}
+    ${prev ? `<label class="check" id="carryopt"><input type="checkbox" name="carry"><span>前回（${fmtDate(prev.date)}・${kindName(prev)}）のデータを引き継ぐ
+        <small id="carrywhat"></small></span></label>
+      <p class="hint" id="carryhint">欠損歯は前回から自動で引き継ぎます。</p>` : ''}
     <div class="dlg-actions"><button type="button" class="btn" data-close>キャンセル</button><button class="btn primary">入力を始める</button></div></form>`);
+  // 前回と種類が違うときは、値は引き継がない（欠損歯だけ）
+  const syncCarry = () => {
+    if (!prev) return;
+    const basic = $('#nf').kind.value === 'basic', same = isBasic(prev) === basic;
+    $('#carryopt').hidden = !same;
+    if (!same) $('#nf').carry.checked = false;
+    $('#carrywhat').textContent = `${basic ? 'ポケット・出血・排膿・動揺度' : 'ポケット・出血・排膿・動揺度・分岐部・プラーク'}。引き継いだ値は薄い色で表示され、確定するまで「未確定」になります`;
+    $('#carryhint').textContent = same ? '欠損歯は前回から自動で引き継ぎます。' : `前回は${kindName(prev)}なので、欠損歯だけ引き継ぎます。`;
+  };
+  $('#nf').querySelectorAll('input[name=kind]').forEach((r) => (r.onchange = syncCarry));
+  syncCarry();
   $('#nf').onsubmit = async (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
-    const ex = newExam(p.id, f.get('date') || today(), (f.get('examiner') || '').trim(), prev, f.get('carry') === 'on');
+    const kind = f.get('kind') === 'basic' ? 'basic' : 'precise';
+    const ex = newExam(p.id, f.get('date') || today(), (f.get('examiner') || '').trim(), prev, f.get('carry') === 'on', kind);
+    settings.lastKind = kind;
     settings.lastExaminer = ex.examiner;
     await saveSettings();
     await DB.put('exams', ex);
@@ -569,6 +625,7 @@ const ed = {
 const PL_RANGES = [['all', '全顎'], ['1', '右上'], ['2', '左上'], ['3', '左下'], ['4', '右下']];
 const PL_FACES = [['m', '近心'], ['d', '遠心'], ['b', '頬側'], ['l', '舌側・口蓋側']];
 const MODES = [['ppd', 'ポケット'], ['bop', '出血'], ['mob', '動揺度'], ['fur', '分岐部'], ['pcr', 'プラーク']];
+const edModes = () => (isBasic(ed.exam) ? MODES.filter(([m]) => ['ppd', 'bop', 'mob'].includes(m)) : MODES);
 
 function nextOpen(list, i, dir, toothOf) {
   for (let j = i + dir; j >= 0 && j < list.length; j += dir) if (!ed.exam.teeth[toothOf(list[j])].missing) return j;
@@ -592,20 +649,22 @@ async function openEditor(examId) {
   voiceStop(true);
   for (const t of ALL) exam.teeth[t].fur ||= {};
   if (exam.pcrNone === undefined) { exam.pcrNone = !!exam.pcrDone && !hasPlaque(exam); delete exam.pcrDone; }
-  Object.assign(ed, { exam, patient, mode: 'ppd', seq: buildSeq(settings.order), flash: '', undo: null, bulkVal: 3, mobBulk: 0, plRange: 'all', plFaces: new Set() });
+  Object.assign(ed, { exam, patient, mode: 'ppd', seq: isBasic(exam) ? buildBasicSeq() : buildSeq(settings.order), flash: '', undo: null, bulkVal: 3, mobBulk: 0, plRange: 'all', plFaces: new Set() });
   ed.cur = firstEmpty(ed.seq, (s) => s.t, (s) => exam.teeth[s.t].ppd[s.k] == null);
   ed.mob = firstEmpty(MOB_SEQ, (t) => t, (t) => exam.teeth[t].mob == null);
   ed.fur = firstEmpty(FURC_SEQ, (s) => s.t, (s) => exam.teeth[s.t].fur[s.f] == null);
   app().innerHTML = `<div class="editor">
     <header class="bar">
       <button class="btn ghost" id="back">‹ ${esc(patient.name)} 様</button>
+      ${isBasic(exam) ? '<span class="kindtag">基本検査</span>' : ''}
       <label class="mini">検査日 <input type="date" id="exdate" value="${esc(exam.date)}"></label>
       <label class="mini">検査者 <input id="exby" value="${esc(exam.examiner || '')}" autocomplete="off"></label>
       <div class="grow"></div>
+      ${gearBtn(false)}
       <span id="savest" class="savest">保存済み</span>
       <button class="btn" id="difbtn" hidden></button>
-      <button class="btn mic" id="mic">🎤 ポケット</button>
-      <button class="btn mic" id="micbop">🎤 出血</button>
+      ${isBasic(exam) ? '' : `<button class="btn mic" id="mic">🎤 ポケット</button>
+      <button class="btn mic" id="micbop">🎤 出血</button>`}
       <button class="btn" id="prt">印刷</button>
       <button class="btn primary" id="done">完了</button>
     </header>
@@ -613,14 +672,13 @@ async function openEditor(examId) {
     <div class="voicebar" id="voicebar" hidden></div>
     <div class="pad" id="pad"></div>
   </div>`;
-  ed.prev = await findPrevExam(exam);
+  ed.prev = await findPrevExam(exam, true); // 前回比は同じ種類の検査と
   ed.showDiff = !!ed.prev;
   const difbtn = $('#difbtn');
   difbtn.hidden = !ed.prev;
   difbtn.onclick = () => { ed.showDiff = !ed.showDiff; refresh(); };
   const leave = async () => { voiceStop(true); await flushSave(); showPatient(patient.id); };
-  $('#mic').onclick = () => voiceToggle('ppd');
-  $('#micbop').onclick = () => voiceToggle('bop');
+  if ($('#mic')) { $('#mic').onclick = () => voiceToggle('ppd'); $('#micbop').onclick = () => voiceToggle('bop'); } // 基本検査は音声入力なし（今は精密検査だけ）
   $('#back').onclick = leave;
   $('#done').onclick = async () => { await flushSave(); if (await finishCheck(exam)) leave(); };
   $('#prt').onclick = async () => { await flushSave(); await printExam(patient, exam); };
@@ -635,11 +693,11 @@ async function openEditor(examId) {
 async function finishCheck(ex) {
   const T = ex.teeth, present = ALL.filter((t) => !T[t].missing);
   const gaps = [];
-  const ppdLeft = present.reduce((n, t) => n + SITES.filter((k) => T[t].ppd[k] == null).length, 0);
-  if (ppdLeft) gaps.push(['ppd', `ポケット：<b>${ppdLeft}部位</b>が未入力`]);
+  const ppdLeft = present.reduce((n, t) => n + examSites(ex).filter((k) => T[t].ppd[k] == null).length, 0);
+  if (ppdLeft) gaps.push(['ppd', `ポケット：<b>${ppdLeft}${isBasic(ex) ? '歯' : '部位'}</b>が未入力`]);
   const mobLeft = present.filter((t) => T[t].mob == null).length;
   if (mobLeft) gaps.push(['mob', `動揺度：<b>${mobLeft}歯</b>が未入力`]);
-  if (!hasPlaque(ex) && !plaqueNone(ex)) gaps.push(['pcr', 'プラーク：未入力（付いていなければ「付着なし」）']);
+  if (!isBasic(ex) && !hasPlaque(ex) && !plaqueNone(ex)) gaps.push(['pcr', 'プラーク：未入力（付いていなければ「付着なし」）']);
   const carried = carriedCount(ex);
   if (carried) gaps.push(['carry', `前回から引き継いで<b>まだ確定していない値が${carried}か所</b>（薄い色の値）`]);
   if (!ex.examiner) gaps.push(['by', '検査者が未入力']);
@@ -717,14 +775,14 @@ async function flushSave() {
 document.addEventListener('visibilitychange', () => { if (document.hidden && ed.saveTimer) flushSave(); });
 
 function padHTML() {
-  const tabs = `<div class="tabs">${MODES.map(([m, l]) => `<button class="tab${ed.mode === m ? ' on' : ''}" data-mode="${m}">${l}</button>`).join('')}</div>`;
+  const tabs = `<div class="tabs">${edModes().map(([m, l]) => `<button class="tab${ed.mode === m ? ' on' : ''}" data-mode="${m}">${l}</button>`).join('')}</div>`;
   const T = ed.exam.teeth;
   const nav = (extra = '') => `<button class="tool" data-act="prev">◀ 戻る</button><button class="tool" data-act="next">進む ▶</button><button class="tool" data-act="clear">消去</button>${extra}`;
   let body = '';
   if (ed.mode === 'ppd') {
     const c = ed.seq[ed.cur], th = T[c.t];
-    body = `<div class="pad-status">${flashHTML()}${ppdComplete() ? '<span class="ok">✓ 全部位入力済み</span>' : ''}<span>入力中：<strong>${siteName(c.t, c.k)}</strong></span>
-        <span class="tip">出血があるときは「出血」→ 数字 の順に押します</span></div>
+    body = `<div class="pad-status">${flashHTML()}${ppdComplete() ? `<span class="ok">✓ ${isBasic(ed.exam) ? '全部の歯' : '全部位'}入力済み</span>` : ''}<span>入力中：<strong>${siteName(c.t, c.k)}</strong></span>
+        <span class="tip">${isBasic(ed.exam) ? '基本検査：歯ごとに、いちばん深い所の値を1つ入れます。' : ''}出血があるときは「出血」→ 数字 の順に押します</span></div>
       <div class="keys n12">${[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((n) => `<button class="key${n >= 6 ? ' hi6' : n >= 4 ? ' hi4' : ''}${th.ppd[c.k] === n ? ' sel' : ''}" data-num="${n}">${n}</button>`).join('')}</div>
       <div class="keys tools7">
         <button class="tool bopt${th.bop[c.k] ? ' on' : ''}" data-act="bop">● 出血</button>
@@ -733,7 +791,7 @@ function padHTML() {
         ${fillGroup(ed.bulkVal, 1, 12)}
       </div>`;
   } else if (ed.mode === 'bop') {
-    const n = ALL.reduce((a, t) => a + (T[t].missing ? 0 : SITES.filter((k) => T[t].bop[k]).length), 0);
+    const n = ALL.reduce((a, t) => a + (T[t].missing ? 0 : examSites(ed.exam).filter((k) => T[t].bop[k]).length), 0);
     const voiceBop = voice.on && voice.mode === 'bop' && voice.ctx;
     body = `<div class="pad-status">${flashHTML()}${voiceBop
       ? `<span>いま出血 <strong>${n}</strong>部位。下の地図を押すと、声で入れる列を切り替えられます</span>`
@@ -901,7 +959,7 @@ function onPadTap(e) {
     }
     if (act !== 'bopclear') return;
     const before = ALL.map((t) => [t, { ...T[t].bop }]);
-    for (const t of ALL) { T[t].bop = {}; for (const k of SITES) unCarry(ed.exam, 'bop', t, k); }
+    for (const t of ALL) { T[t].bop = {}; for (const k of examSites(ed.exam)) unCarry(ed.exam, 'bop', t, k); }
     ed.undo = { kind: 'bopclear', before };
     ed.flash = '出血の記録をすべて消しました';
     return touch();
@@ -2327,7 +2385,7 @@ function hideTip() { const tip = $('#tip'); if (tip) tip.hidden = true; }
 /* ================= 印刷 ================= */
 function printHTML(p, ex) {
   const age = ageAt(p.birth, ex.date);
-  return `<div class="pr-head"><div class="pr-title">歯周組織検査（ペリオチャート）</div><div class="pr-clinic">${esc(settings.clinicName)}</div></div>
+  return `<div class="pr-head"><div class="pr-title">${isBasic(ex) ? '歯周基本検査' : '歯周組織検査（ペリオチャート）'}</div><div class="pr-clinic">${esc(settings.clinicName)}</div></div>
     <table class="pr-info">
       <tr><th>氏名</th><td>${esc(p.name)} 様</td><th>ふりがな</th><td>${esc(p.kana || '')}</td><th>カルテ番号</th><td>${esc(p.chartNo || '')}</td></tr>
       <tr><th>生年月日</th><td>${p.birth ? `${fmtDate(p.birth)}（${age}歳）` : ''}</td><th>検査日</th><td>${fmtDate(ex.date)}</td><th>検査者</th><td>${esc(ex.examiner || '')}</td></tr>
@@ -2336,7 +2394,7 @@ function printHTML(p, ex) {
     <div class="pr-stats">${statsHTML(calcStats(ex))}</div>
     <div class="pr-legend"><span><i class="lg bop"></i>出血（BOP）</span><span><i class="lg pus"></i>排膿</span>
       <span><i class="lg p4"></i>PPD 4〜5mm</span><span><i class="lg p6"></i>PPD 6mm以上</span>
-      <span><i class="lg fu"></i>根分岐部病変（Lindhe分類 Ⅰ〜Ⅲ度）</span><span><i class="lg pl"></i>プラーク付着</span>
+      ${isBasic(ex) ? '<span>ポケットは1歯1点（いちばん深い所）</span>' : '<span><i class="lg fu"></i>根分岐部病変（Lindhe分類 Ⅰ〜Ⅲ度）</span><span><i class="lg pl"></i>プラーク付着</span>'}
       <span>動揺度 0〜3</span><span>斜線：欠損歯</span></div>`;
 }
 function setPage(orientation) {
@@ -2363,7 +2421,7 @@ function trendSheetHTML(p, liveAsc) {
     <div class="ts-who"><b>${esc(p.name)}</b> 様　　今回の検査：${fmtDate(cur.date)}${prev ? `　　前回：${fmtDate(prev.date)}` : ''}　　検査の回数：${liveAsc.length}回</div>
     <table class="ts-table"><thead><tr><th>項目</th><th>前回</th><th>今回</th><th>変化</th><th>見かた</th></tr></thead><tbody>${rows}</tbody></table>
     ${liveAsc.length > 1 ? `<div class="ts-charts">${trendCardsHTML(liveAsc, { keys: ['boppct', 'ge4pct', 'pcr', 'mean'], noHover: true, w: 240, h: 120 })}</div>` : ''}
-    <div class="ts-sub">今回のチャート${prev ? `（前回より${DIFF_MIN}mm以上変わった部位に印：<i class="dif dn">−</i>浅くなった ${dc.better}部位／<i class="dif up">+</i>深くなった ${dc.worse}部位）` : ''}</div>
+    <div class="ts-sub">今回のチャート${prev && !dc.other ? `（前回より${DIFF_MIN}mm以上変わった部位に印：<i class="dif dn">−</i>浅くなった ${dc.better}部位／<i class="dif up">+</i>深くなった ${dc.worse}部位）` : ''}</div>
     ${chartHTML(cur, { print: true, prev })}
     <div class="ts-comment"><div>担当者より</div></div>`;
 }
@@ -2410,11 +2468,30 @@ function bindGuideSettings() {
 }
 
 /* ================= 設定・バックアップ ================= */
+// 開いた画面を覚えておき、「戻る」でそこへ帰る（入力画面なら音声を止めて保存してから）
+let settingsFrom = null;
+async function openSettingsFrom() {
+  if (view.name === 'settings') return;
+  if (view.name === 'editor') { voiceStop(true); await flushSave(); }
+  settingsFrom = ['editor', 'patient', 'paper', 'paperdraft'].includes(view.name) ? { ...view } : null;
+  showSettings();
+}
+const SETTINGS_BACK = { editor: '入力画面', patient: '患者画面', paper: '取り込み一覧', paperdraft: '取り込み' };
+function leaveSettings() {
+  const f = settingsFrom;
+  settingsFrom = null;
+  if (!f) return showList();
+  if (f.name === 'editor') return openEditor(f.examId);
+  if (f.name === 'patient') return showPatient(f.pid, f.showDeleted);
+  if (f.name === 'paper') return showPaperList();
+  if (f.name === 'paperdraft') return showPaperDraft(f.id);
+  showList();
+}
 async function showSettings() {
   view = { name: 'settings' };
   const persisted = navigator.storage && navigator.storage.persisted ? await navigator.storage.persisted() : null;
   app().innerHTML = `
-    <header class="bar"><button class="btn ghost" data-go="list">‹ 患者一覧</button><h1>設定・バックアップ</h1><div class="grow"></div></header>
+    <header class="bar"><button class="btn ghost" id="setback">‹ ${settingsFrom ? SETTINGS_BACK[settingsFrom.name] : '患者一覧'}</button><h1>設定・バックアップ</h1><div class="grow"></div></header>
     <main class="wrap stack">
       <section class="card"><h2>医院名（印刷に表示されます）</h2><input id="clinic" class="text" value="${esc(settings.clinicName)}" placeholder="例：〇〇歯科医院" autocomplete="off"></section>
       <section class="card"><h2>ポケット測定の順番</h2>
@@ -2437,6 +2514,7 @@ async function showSettings() {
       <section class="card"><h2>音声入力の読み上げテスト</h2><p>お題を読み上げて、正しく聞き取れるかを確かめます。結果は記録され、書き出して送れます。</p><button class="btn" id="vtOpen">読み上げテストを開く</button></section>
       <section class="card"><h2>見本データ</h2><p>動作確認用に、架空の患者「見本 太郎」と3回分の検査を追加します。</p><button class="btn" id="demo">見本データを追加</button></section>
     </main>`;
+  $('#setback').onclick = leaveSettings;
   $('#clinic').onchange = (e) => { settings.clinicName = e.target.value.trim(); saveSettings(); };
   document.querySelectorAll('input[name=order]').forEach((r) => (r.onchange = () => { settings.order = r.value; saveSettings(); }));
   $('#imp').onchange = (e) => { const f = e.target.files[0]; if (f) importBackup(f); e.target.value = ''; };
@@ -2718,7 +2796,7 @@ async function showPaperList() {
       <span class="chev">›</span></button>`;
   };
   app().innerHTML = `
-    <header class="bar"><button class="btn ghost" data-go="list">‹ 患者一覧</button><h1>紙のチャートから取り込み</h1><div class="grow"></div></header>
+    <header class="bar"><button class="btn ghost" data-go="list">‹ 患者一覧</button><h1>紙のチャートから取り込み</h1><div class="grow"></div>${gearBtn()}</header>
     <main class="wrap stack">
       <section class="card">
         <h2>新しく取り込む</h2>
@@ -2796,6 +2874,7 @@ async function showPaperDraft(id) {
       <label class="btn">${d.photo ? '写真を差し替え' : '📷 写真を付ける'}<input type="file" id="pphoto2" class="vh" accept="image/*" capture="environment"></label>
       ${d.photo ? `<button class="btn${d.source === 'ai' ? '' : ' primary'}" id="pai">🤖 ${d.source === 'ai' ? 'AIで読み直す' : 'AIで読み取る'}</button>` : ''}
       ${d.aiYen ? `<span class="sub pcost">${aiCostOf(d)}</span>` : ''}
+      ${gearBtn(false)}
       <button class="btn danger" id="pdel">削除</button>
       <button class="btn primary" id="preg">${d.doneAt ? '登録済み' : '登録する'}</button></header>
     <div class="paperwrap">
@@ -3045,7 +3124,7 @@ async function reopenView() {
   try { v = JSON.parse(sessionStorage.getItem('perio-v2-reopen')); sessionStorage.removeItem('perio-v2-reopen'); } catch { v = null; }
   if (v && v.name === 'editor' && (await DB.get('exams', v.examId))) {
     await openEditor(v.examId);
-    if (MODES.some(([m]) => m === v.mode)) { ed.mode = v.mode; refresh(); }
+    if (edModes().some(([m]) => m === v.mode)) { ed.mode = v.mode; refresh(); }
   } else if (v && v.name === 'patient') await showPatient(v.pid, v.showDeleted);
   else if (v && v.name === 'settings') await showSettings();
   else if (v && v.name === 'voicetest') await showVoiceTest();
