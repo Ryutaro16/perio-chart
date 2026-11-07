@@ -541,3 +541,7 @@ body.pr-portrait #print .chart i.dif { font-size: 6pt; }
 .aicost details { margin: 8px 0; }
 .aicost summary { cursor: pointer; color: var(--accent); padding: 4px 0; }
 .pcost { white-space: nowrap; }
+
+/* 使うマイク：音の大きさのバー */
+.micbar { flex: 1; min-width: 160px; max-width: 320px; height: 14px; border-radius: 7px; background: var(--line-soft); overflow: hidden; }
+.micbar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .08s; }

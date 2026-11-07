@@ -1180,9 +1180,13 @@ function setVoiceMode(mode) {
   if (mode === 'bop') voice.ctx = { q: 1, side: 'b' }; // 出血モードは、いつも右上 頬側から始める（2026-10-13 利用者の指定）
   if (voice.on || mode === 'bop') { ed.mode = mode; refresh(); }
 }
-function voiceStart() {
+async function voiceStart() {
   unlockAudio();
   if (!SR) { voiceMsg('この画面では音声認識が使えません。iPadは Safari のタブで、Macは Safari か Chrome で開いてください'); return; }
+  if (voice.starting) return;
+  voice.starting = true;
+  await micPrepare();
+  voice.starting = false;
   const r = new SR();
   r.lang = 'ja-JP';
   r.continuous = true;
@@ -1235,11 +1239,85 @@ function voiceStop(silent = false) {
   voice.rec = null;
   voice.interim = '';
   if (r) try { r.stop(); } catch { /* 停止済み */ }
+  micRelease();
   if (silent) { voice.msg = ''; voice.warn = ''; }
   renderVoice();
   if (view.name === 'editor' && $('#chart') && ed.exam) refresh(); // 出血だけモードの列の印を消す
 }
 function voiceMsg(m) { voice.msg = m; voice.warn = ''; renderVoice(); }
+
+// ---- 使うマイク（試し・2026-11-07） ----
+// iPadのSafariの音声認識は、外付けのマイクをつないでも本体のマイクを使うことがある（ボイスメモでは外付けが使える）。
+// 聞き取りを始める直前に、設定で選んだマイクをアプリから開いて、iPadに切り替えを促す。
+// 方法1（micHold なし）＝開いてすぐ閉じる／方法2（micHold）＝聞き取りのあいだ開いたままにする。どちらが効くかは iPad で確かめる
+const mic = { stream: null };
+async function micList() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return [];
+  return (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audioinput' && d.deviceId);
+}
+// 保存したマイクを探す。iPadは開き直すと番号（deviceId）が変わることがあるので、名前でも探す
+async function micFind() {
+  const list = await micList();
+  return list.find((d) => d.deviceId === settings.micId) || list.find((d) => settings.micLabel && d.label === settings.micLabel) || null;
+}
+async function micPrepare() {
+  if (!settings.micId || !navigator.mediaDevices) return;
+  micRelease();
+  try {
+    const d = await micFind();
+    const s = await navigator.mediaDevices.getUserMedia({ audio: d ? { deviceId: { exact: d.deviceId } } : true });
+    if (settings.micHold) mic.stream = s; else s.getTracks().forEach((t) => t.stop());
+  } catch { /* 開けなければ、いつもどおり iPad にまかせる */ }
+}
+function micRelease() { if (mic.stream) mic.stream.getTracks().forEach((t) => t.stop()); mic.stream = null; }
+function micSettingsHTML() {
+  return `<section class="card"><h2>使うマイク（外付けマイク・試し）</h2>
+      <p class="sub">ピンマイクなどをつないでも、音声入力が iPad 本体のマイクで聞き取ってしまうときに使います。①「マイクの一覧を読み込む」→ ② つないだマイクを選ぶ →「音の大きさを見る」で、そのマイクに話すとバーが動くか確かめる → ③ 読み上げテストで、iPad から離れて小さな声で話しても聞き取れるか確かめます。方法1でだめなら方法2を試してください。</p>
+      <div class="row-tools"><button class="btn" id="micLoad">マイクの一覧を読み込む</button>
+        <select id="micSel" class="text" style="max-width:320px"><option value="">自動（iPad にまかせる）</option>${settings.micId ? `<option value="${esc(settings.micId)}" selected>${esc(settings.micLabel || '選んだマイク')}</option>` : ''}</select></div>
+      <div class="row-tools">${[[false, '方法1：始める前に開いてすぐ閉じる'], [true, '方法2：聞き取りのあいだ開いたままにする']].map(([v, l]) => `<label class="mini"><input type="radio" name="michold" value="${v ? 1 : 0}" ${!!settings.micHold === v ? 'checked' : ''}> ${l}</label>`).join('')}</div>
+      <div class="row-tools"><button class="btn" id="micMeter">音の大きさを見る（10秒）</button><div class="micbar"><i id="micLvl"></i></div></div>
+      <p class="sub" id="micSt">${settings.micId ? `選んでいるマイク：${esc(settings.micLabel || '')}` : 'いまは自動（iPad にまかせる）です'}</p></section>`;
+}
+function bindMicSettings() {
+  const fill = (list) => {
+    $('#micSel').innerHTML = `<option value="">自動（iPad にまかせる）</option>` + list.map((d, i) => `<option value="${esc(d.deviceId)}" ${d.deviceId === settings.micId || (settings.micLabel && d.label === settings.micLabel) ? 'selected' : ''}>${esc(d.label || `マイク${i + 1}`)}</option>`).join('');
+  };
+  $('#micLoad').onclick = async () => {
+    // 名前は、マイクの使用を一度許可しないと出ない
+    try { const s = await navigator.mediaDevices.getUserMedia({ audio: true }); s.getTracks().forEach((t) => t.stop()); } catch { $('#micSt').textContent = 'マイクの使用が許可されていません'; return; }
+    const list = await micList();
+    fill(list);
+    $('#micSt').textContent = `${list.length}個のマイクが見つかりました。つないだマイクを選んでください`;
+  };
+  $('#micSel').onchange = async (e) => {
+    const o = e.target.selectedOptions[0];
+    settings.micId = e.target.value || null;
+    settings.micLabel = e.target.value ? o.textContent : '';
+    await saveSettings();
+    $('#micSt').textContent = settings.micId ? `選んでいるマイク：${settings.micLabel}` : 'いまは自動（iPad にまかせる）です';
+  };
+  document.querySelectorAll('input[name=michold]').forEach((r) => (r.onchange = () => { settings.micHold = r.value === '1'; saveSettings(); }));
+  $('#micMeter').onclick = async () => {
+    let s;
+    try { const d = settings.micId ? await micFind() : null; s = await navigator.mediaDevices.getUserMedia({ audio: d ? { deviceId: { exact: d.deviceId } } : true }); } catch { $('#micSt').textContent = 'マイクを開けませんでした'; return; }
+    const track = s.getAudioTracks()[0];
+    $('#micSt').textContent = `いま開いているマイク：${track ? track.label : '不明'}`;
+    const ac = new (window.AudioContext || window.webkitAudioContext)(), an = ac.createAnalyser();
+    ac.createMediaStreamSource(s).connect(an);
+    const buf = new Uint8Array(an.fftSize), t0 = Date.now();
+    const tick = () => {
+      an.getByteTimeDomainData(buf);
+      let peak = 0;
+      for (const v of buf) peak = Math.max(peak, Math.abs(v - 128));
+      const bar = $('#micLvl');
+      if (bar) bar.style.width = `${Math.min(100, (peak / 128) * 250)}%`;
+      if (bar && Date.now() - t0 < 10000) requestAnimationFrame(tick);
+      else { s.getTracks().forEach((t) => t.stop()); ac.close(); if (bar) bar.style.width = '0'; }
+    };
+    tick();
+  };
+}
 // 入力しなかった理由（聞き取れない・欠損など）は、帯を黄色にして大きく出す
 const WARN_RE = /入力していません|聞き取れません|欠損です|ありません|出血モードです|入力済み|入力できる言葉/;
 function setVoiceResult(raw, done, fallback) {
@@ -2065,8 +2143,9 @@ async function showVoiceTest() {
     vt.log.map((l) => [l.time, l.ok ? '○' : '×', l.kind, l.phrase, l.start, l.heard, l.result]));
   vtRender();
 }
-function vtStart() {
+async function vtStart() {
   if (!SR) { vt.last = { msg: 'この画面では音声認識が使えません。iPadは Safari のタブで開いてください' }; vtRender(); return; }
+  await micPrepare();
   const r = new SR();
   r.lang = 'ja-JP'; r.continuous = true; r.interimResults = true;
   r.onresult = (e) => {
@@ -2094,6 +2173,7 @@ function vtStop() {
   vt.on = false; clearTimeout(vt.timer);
   const r = vt.rec; vt.rec = null; vt.interim = '';
   if (r) try { r.stop(); } catch { /* 停止済み */ }
+  micRelease();
   if (view.name === 'voicetest') vtRender();
 }
 function vtJudge() {
@@ -2315,6 +2395,7 @@ async function showSettings() {
         <p class="sub" id="aipassst"></p>
         <h3 class="costh">💰 かかった金額</h3>
         <div id="aicost" class="aicost"><p class="sub">合言葉を入れると表示されます</p></div></section>
+      ${micSettingsHTML()}
       ${guideSettingsHTML()}
       <section class="card"><h2>音声入力の読み上げテスト</h2><p>お題を読み上げて、正しく聞き取れるかを確かめます。結果は記録され、書き出して送れます。</p><button class="btn" id="vtOpen">読み上げテストを開く</button></section>
       <section class="card"><h2>見本データ</h2><p>動作確認用に、架空の患者「見本 太郎」と3回分の検査を追加します。</p><button class="btn" id="demo">見本データを追加</button></section>
@@ -2328,6 +2409,7 @@ async function showSettings() {
   $('#aipass').onchange = async (e) => { const pass = e.target.value.trim(); await DB.put('settings', { key: 'aiRead', pass }); e.target.value = ''; passSt(pass); loadAiCost(); };
   loadAiCost();
   bindGuideSettings();
+  bindMicSettings();
   $('#demo').onclick = async () => {
     const { patient, exams } = makeDemo();
     await DB.put('patients', patient);
