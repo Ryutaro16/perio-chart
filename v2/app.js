@@ -2309,6 +2309,10 @@ async function showSettings() {
         <div class="row-tools"><button class="btn primary" data-act="backup">バックアップを書き出す</button>
           <label class="btn">バックアップから読み込む<input type="file" id="imp" class="vh" accept="application/json,.json"></label></div>
         <p class="sub">保存領域の保護：${persisted === null ? '不明' : persisted ? '有効（ブラウザが自動で消さない設定）' : '未設定（ホーム画面に追加して使うと安定します）'}</p></section>
+      <section class="card"><h2>紙の取り込み：AIで読み取る</h2>
+        <p>紙のチャートの写真を中継サーバー経由で AI（Claude）に送り、数字を読み取ります。1枚 約10〜30円（推定）。写真に写った内容（カルテ番号・ポケットの値・日付など）が外部のAIに送られます。写真も結果もサーバーには残りません。</p>
+        <label class="hfield">合言葉 <input id="aipass" type="password" class="text" style="width:240px;font-weight:400" autocomplete="off" placeholder="音声カルテと同じ合言葉"></label>
+        <p class="sub" id="aipassst"></p></section>
       ${guideSettingsHTML()}
       <section class="card"><h2>音声入力の読み上げテスト</h2><p>お題を読み上げて、正しく聞き取れるかを確かめます。結果は記録され、書き出して送れます。</p><button class="btn" id="vtOpen">読み上げテストを開く</button></section>
       <section class="card"><h2>見本データ</h2><p>動作確認用に、架空の患者「見本 太郎」と3回分の検査を追加します。</p><button class="btn" id="demo">見本データを追加</button></section>
@@ -2317,6 +2321,9 @@ async function showSettings() {
   document.querySelectorAll('input[name=order]').forEach((r) => (r.onchange = () => { settings.order = r.value; saveSettings(); }));
   $('#imp').onchange = (e) => { const f = e.target.files[0]; if (f) importBackup(f); e.target.value = ''; };
   $('#vtOpen').onclick = showVoiceTest;
+  const passSt = (p) => ($('#aipassst').textContent = p ? '合言葉は入力済みです（このiPadの中だけに保存。バックアップには入りません）' : 'まだ入力されていません');
+  passSt(await aiPass());
+  $('#aipass').onchange = async (e) => { const pass = e.target.value.trim(); await DB.put('settings', { key: 'aiRead', pass }); e.target.value = ''; passSt(pass); };
   bindGuideSettings();
   $('#demo').onclick = async () => {
     const { patient, exams } = makeDemo();
@@ -2501,6 +2508,41 @@ async function shrinkPhoto(file, max = 2576) {
   return new Promise((res) => c.toBlob(res, 'image/jpeg', 0.9));
 }
 
+// ---- AIで読み取る ----
+// 写真を中継サーバー（Cloudflare Workers。音声カルテと共用）へ送り、Claude が読み取った形で受け取る。
+// 写真も読み取った値もサーバーには残らない。合言葉は設定画面で入れ、settings ストアの 'aiRead' に置く（バックアップには入れない）
+const AI_API = location.hostname === 'localhost' ? 'http://localhost:8790' : 'https://onsei-karte.kinmon-push.workers.dev';
+const aiPass = async () => ((await DB.get('settings', 'aiRead')) || {}).pass || '';
+async function paperReadAI(d) {
+  if (!d.photo) return;
+  const pass = await aiPass();
+  if (!pass) { await notify('AIで読み取るには、設定画面の「紙の取り込み：AIで読み取る」で合言葉を一度入れてください。'); return; }
+  const filled = d.exams.some((e) => Object.values(e.teeth).some((t) => t.st !== 'ok' || t.mob != null || [...t.b, ...t.l].some((v) => v != null)));
+  if (filled && !(await askConfirm('今の表の数字は、AIが読み取った数字に置き換わります。よろしいですか？', 'AIで読み取る'))) return;
+  openDialog(`<div class="dlg-body"><div class="spin"></div><p class="dlg-msg" style="text-align:center">AIが写真を読み取っています…<br><small class="sub">1〜2分ほどかかります。この画面のままお待ちください</small></p></div>`);
+  const dlg = $('#dlg');
+  dlg.oncancel = (e) => e.preventDefault(); // 読み取り中は閉じない
+  let r, err;
+  try {
+    const res = await fetch(`${AI_API}/api/perio-read`, { method: 'POST', headers: { 'Content-Type': d.photo.type || 'image/jpeg', 'X-Passphrase': pass, 'X-Device': encodeURIComponent('ペリオ') }, body: d.photo });
+    r = await res.json().catch(() => ({}));
+    if (!res.ok) err = r.error || `読み取れませんでした（${res.status}）`;
+  } catch { err = 'サーバーにつながりませんでした。インターネットの接続を確かめてください。'; }
+  dlg.oncancel = null;
+  closeDialog();
+  if (err) { await notify(err); return; }
+  const sheet = r.sheet || {};
+  if (!d.chartNo && sheet.chartNo) d.chartNo = String(sheet.chartNo).trim();
+  d.exams = (sheet.exams || []).map(paperNormalizeExam);
+  if (!d.exams.length) d.exams = [paperBlankExam()];
+  d.source = 'ai';
+  d.aiYen = (d.aiYen || 0) + (r.yen || 0);
+  await savePaper(d);
+  await showPaperDraft(d.id);
+  const uns = d.exams.reduce((n, e) => n + Object.keys(e.unsure).length, 0);
+  await notify(`${d.exams.length}回分を読み取りました（約${Math.max(1, Math.round(r.yen || 0))}円）。\n${uns ? `黄色の${uns}か所（自信がない所）から、` : ''}写真と見比べて確かめてから登録してください。`);
+}
+
 // ---- 取り込みの一覧 ----
 async function showPaperList() {
   view = { name: 'paper' };
@@ -2524,7 +2566,7 @@ async function showPaperList() {
           <label class="btn">読み取り済みのファイルを読み込む<input type="file" id="pfile" class="vh" accept="application/json,.json,text/plain,.txt"></label>
           <button class="btn" id="ppaste">貼り付けで読み込む</button>
         </div>
-        <p class="sub">数字は、写真を見ながら表に入力するか、Claude Code で写真から読み取ったファイルを読み込んでから、写真と見比べて直します。</p>
+        <p class="sub">撮影したあと「🤖 AIで読み取る」を押すと、数字が自動で入ります（1枚 約10〜30円）。写真を見ながら手で入れることもできます。どちらも、写真と見比べて直してから登録します。</p>
       </section>
       <section class="card list">${drafts.length ? drafts.map(row).join('') : '<p class="empty">まだ取り込み中のものはありません</p>'}</section>
     </main>`;
@@ -2590,6 +2632,7 @@ async function showPaperDraft(id) {
       <label class="hfield">カルテ番号 No.<input id="pno" value="${esc(d.chartNo)}" inputmode="numeric" autocomplete="off" placeholder="例：3927"></label>
       <span class="sub" id="pmatch"></span><div class="grow"></div>
       <label class="btn">${d.photo ? '写真を差し替え' : '📷 写真を付ける'}<input type="file" id="pphoto2" class="vh" accept="image/*" capture="environment"></label>
+      ${d.photo ? `<button class="btn${d.source === 'ai' ? '' : ' primary'}" id="pai">🤖 ${d.source === 'ai' ? 'AIで読み直す' : 'AIで読み取る'}</button>` : ''}
       <button class="btn danger" id="pdel">削除</button>
       <button class="btn primary" id="preg">${d.doneAt ? '登録済み' : '登録する'}</button></header>
     <div class="paperwrap">
@@ -2607,6 +2650,7 @@ async function showPaperDraft(id) {
     showPaperList();
   };
   $('#preg').onclick = () => paperRegister();
+  if ($('#pai')) $('#pai').onclick = () => paperReadAI(d);
   $('#pphoto2').onchange = async (e) => {
     const f = e.target.files[0];
     e.target.value = '';
