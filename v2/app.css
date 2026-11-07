@@ -611,3 +611,24 @@ body.pr-portrait #print .chart i.dif { font-size: 6pt; }
 .ofirst { font-size: 13px; color: var(--sub); margin: 4px 0; line-height: 1.6; }
 @media (max-width: 760px) { .ord .oopts { grid-template-columns: 1fr 1fr; } .opview td.opv { min-width: 90px; } }
 .ord .oblocks > .btn { align-self: flex-start; }
+
+/* 測る道すじの図で選ぶ */
+.ord .otiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; }
+.otile { border: 2px solid var(--line); border-radius: 12px; padding: 8px 8px 10px; background: #fff; text-align: center; font: inherit; color: var(--ink); cursor: pointer; }
+.otile.on { border-color: var(--accent); background: #e9f6f4; box-shadow: 0 0 0 2px var(--accent) inset; }
+.otile b { display: block; font-size: 15px; margin-top: 4px; }
+.otile small { display: block; font-size: 11.5px; color: var(--sub); line-height: 1.4; }
+.otile .badge, .ord .badge { display: inline-block; font-size: 11px; font-weight: 800; background: var(--accent); color: #fff; border-radius: 6px; padding: 1px 6px; margin-left: 6px; vertical-align: 2px; }
+.route { width: 100%; height: auto; display: block; }
+.route .rrow rect { fill: #f3f5f7; stroke: var(--line); }
+.route .rmid { stroke: #c0c7d0; stroke-dasharray: 2 2; }
+.route .rpath path { fill: none; stroke: var(--accent); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.route .rhead { fill: var(--accent); }
+.route .rn circle { fill: var(--accent); }
+.route .rn text { fill: #fff; font-size: 10px; font-weight: 800; text-anchor: middle; }
+.route .rpen { font-size: 22px; text-anchor: middle; }
+.ord .onote { font-size: 12px; color: var(--sub); margin: 6px 0; }
+.ord .osub { background: #f3f5f7; border-radius: 12px; padding: 10px 12px; margin-top: 8px; }
+.ord .osub .olab { margin: 4px 0; display: block; }
+.ord .obig { max-width: 420px; margin: 8px 0; }
+.exh small.olab { font-weight: 600; margin-left: 6px; }

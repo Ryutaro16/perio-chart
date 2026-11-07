@@ -2585,22 +2585,34 @@ function orderDialog(id) {
     const blocks = orderBlocks(sp), prob = custom ? orderProblems(blocks) : { miss: [], dup: [] };
     const sel = (cls, i, opts, v) => `<select class="${cls}" data-i="${i}">${opts.map(([k, l]) => `<option value="${k}" ${String(v) === String(k) ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
     const QOPT = [[1, '右上'], [2, '左上'], [3, '左下'], [4, '右下']], DOPT = [['in', '8→1'], ['out', '1→8']];
-    const precise = (person && w.useDefault) ? `<p class="sub">いつもの順番（${esc(orderSummary(defaultSpec()))}）で入力します。</p>` : `
-      <div class="oopts">${[...Object.entries(ORDER_PRESETS), ['custom', { label: '自分で作る', desc: '区間を好きな順に並べる' }]].map(([k, o]) => `<label class="kindopt"><input type="radio" name="opre" value="${k}" ${sp.preset === k ? 'checked' : ''}><span><b>${o.label}</b><small>${o.desc}</small></span></label>`).join('')}</div>
-      ${!custom ? `<div class="orow">${sp.preset === 'tooth' ? `<span class="olab">先に測る側</span>${['b', 'l'].map((v) => `<label class="mini"><input type="radio" name="ofirst" value="${v}" ${(sp.first || 'b') === v ? 'checked' : ''}> ${v === 'b' ? '頬側' : '舌側（口蓋側）'}</label>`).join('')}` : ''}
-        <span class="olab">始める所</span>${['R', 'L'].map((v) => `<label class="mini"><input type="radio" name="ostart" value="${v}" ${(sp.start || 'R') === v ? 'checked' : ''}> ${v === 'R' ? '右上8から' : '左上8から'}</label>`).join('')}</div>`
-      : `<div class="oblocks">${blocks.map((b, i) => `<div class="oblock"><b>${i + 1}</b>${sel('obq', i, QOPT, b.q)}${sel('obs', i, Object.entries(SIDE_LABEL), b.side)}${sel('obd', i, DOPT, b.dir)}
+    // 測り方は、道すじの図を押して選ぶ（図は今の「先に測る側」「始める所」で描く）
+    const cur = person && w.useDefault ? 'default' : sp.preset;
+    const st = { start: sp.start || 'R', first: sp.first || 'b' };
+    const tile = (key, label, desc, bl, badge = '', merge = true) => `<button type="button" class="otile${cur === key ? ' on' : ''}" data-tile="${key}">${routeSVG(bl, merge)}
+      <b>${label}${badge ? `<span class="badge">${badge}</span>` : ''}</b><small>${desc}</small></button>`;
+    const chip = (attr, v, l, on) => `<button type="button" class="exchip${on ? ' on' : ''}" ${attr}="${v}">${l}</button>`;
+    const precise = `<div class="otiles">
+        ${person ? tile('default', 'いつもの順番', esc(orderSummary(defaultSpec())), orderBlocks(defaultSpec()), '標準') : ''}
+        ${tile('z', '列ごと', ORDER_PRESETS.z.desc, orderBlocks({ preset: 'z', ...st }))}
+        ${tile('loop', '一筆書き', ORDER_PRESETS.loop.desc, orderBlocks({ preset: 'loop', ...st }))}
+        ${tile('tooth', '1歯ずつ', '1本ごとに頬側と舌側を測ってから次の歯へ', orderBlocks({ preset: 'tooth', ...st }))}
+        ${tile('custom', '自分で作る', '上のどれにも当てはまらない人向け。区間を自由に並べる', custom ? blocks : [], '', false)}</div>
+      <p class="onote">図：上から 上の頬側・上の口蓋側・下の舌側・下の頬側。左が患者さんの右。数字は測る順</p>
+      ${cur === 'default' ? `<p class="sub">いつもの順番（${esc(orderSummary(defaultSpec()))}）で入力します。いつもの順番が変わると、この人も変わります。</p>`
+      : !custom ? `<div class="osub">${sp.preset === 'tooth' ? `<div class="olab">先に測る側</div><div class="exchips">${chip('data-first', 'b', '頬側', st.first === 'b')}${chip('data-first', 'l', '舌側（口蓋側）', st.first === 'l')}</div>` : ''}
+          <div class="olab">始める所</div><div class="exchips">${chip('data-start', 'R', '右上8から', st.start === 'R')}${chip('data-start', 'L', '左上8から', st.start === 'L')}</div>
+          ${orderPreviewHTML(blocks)}</div>`
+      : `<div class="osub"><div class="oblocks">${blocks.map((b, i) => `<div class="oblock"><b>${i + 1}</b>${sel('obq', i, QOPT, b.q)}${sel('obs', i, Object.entries(SIDE_LABEL), b.side)}${sel('obd', i, DOPT, b.dir)}
           <label class="mini"><input type="checkbox" class="obf" data-i="${i}" ${b.flip ? 'checked' : ''}> 1歯の中を逆に</label>
           <button class="tool" data-mv="${i}" data-d="-1" ${i ? '' : 'disabled'}>↑</button><button class="tool" data-mv="${i}" data-d="1" ${i < blocks.length - 1 ? '' : 'disabled'}>↓</button><button class="tool" data-rm="${i}">✕</button></div>`).join('')}
         <button class="btn" id="obadd">＋ 区間を追加</button>
-        ${prob.miss.length || prob.dup.length ? `<p class="owarn">${prob.miss.length ? `入っていない所：${prob.miss.join('・')}　` : ''}${prob.dup.length ? `重なっている所：${prob.dup.join('・')}` : ''}</p>` : '<p class="ook">✓ 全部の部位が1回ずつ入っています</p>'}</div>`}
-      ${orderPreviewHTML(blocks)}`;
+        ${prob.miss.length || prob.dup.length ? `<p class="owarn">${prob.miss.length ? `入っていない所：${prob.miss.join('・')}　` : ''}${prob.dup.length ? `重なっている所：${prob.dup.join('・')}` : ''}</p>` : '<p class="ook">✓ 全部の部位が1回ずつ入っています</p>'}</div>
+        <div class="obig">${routeSVG(blocks, false)}</div>${orderPreviewHTML(blocks)}</div>`}`;
     const bs = w.basic && w.basic.preset === 'custom' ? w.basic : null;
     const bq = bs ? [1, 2, 3, 4].filter((q) => bs.blocks.filter((b) => b.q === q).length !== 1).map((q) => QNAME[q]) : [];
     const basicSeqNow = basicSeqFrom(w.basic, person && w.useDefault ? defaultSpec() : w.spec);
     $('#oedit').innerHTML = `
-      <h3 class="exh">精密検査（6点）</h3>
-      ${person ? `<label class="check"><input type="checkbox" id="ouse" ${w.useDefault ? 'checked' : ''}><span>いつもの順番を使う</span></label>` : ''}
+      <h3 class="exh">精密検査（6点）の測り方 <small class="olab">図を押して選ぶ</small></h3>
       ${precise}
       <h3 class="exh">基本検査（1歯1点）</h3>
       <div class="orow">${[['same', '精密検査と同じ流れ'], ['custom', '自分で作る']].map(([v, l]) => `<label class="mini"><input type="radio" name="obasic" value="${v}" ${(bs ? 'custom' : 'same') === v ? 'checked' : ''}> ${l}</label>`).join('')}</div>
@@ -2616,12 +2628,14 @@ function orderDialog(id) {
   const bind = () => {
     const d = $('#oedit');
     const on = (sel, ev, fn) => d.querySelectorAll(sel).forEach((el) => (el[ev] = () => { fn(el); draw(); }));
-    on('#ouse', 'onchange', (el) => { w.useDefault = el.checked; });
-    on('input[name=opre]', 'onchange', (el) => {
-      if (el.value === 'custom') toCustom(); else w.spec = { preset: el.value, start: w.spec.start || 'R', first: w.spec.first || 'b' };
+    on('[data-tile]', 'onclick', (el) => {
+      const k = el.dataset.tile;
+      if (k === 'default') { w.useDefault = true; return; }
+      w.useDefault = false;
+      if (k === 'custom') toCustom(); else w.spec = { preset: k, start: w.spec.start || 'R', first: w.spec.first || 'b' };
     });
-    on('input[name=ofirst]', 'onchange', (el) => { w.spec.first = el.value; });
-    on('input[name=ostart]', 'onchange', (el) => { w.spec.start = el.value; });
+    on('[data-first]', 'onclick', (el) => { w.spec.first = el.dataset.first; });
+    on('[data-start]', 'onclick', (el) => { w.spec.start = el.dataset.start; });
     const B = () => w.spec.blocks;
     on('.obq', 'onchange', (el) => { B()[el.dataset.i].q = Number(el.value); });
     on('.obs', 'onchange', (el) => { B()[el.dataset.i].side = el.value; });
@@ -2658,21 +2672,43 @@ function orderDialog(id) {
     showSettings();
   };
 }
-// 順番の見本：8つの区間（チャートと同じ並び）に、何番目にどちら向きに測るか
+// 測る道すじの図（4段：上の頬側・上の口蓋側・下の舌側・下の頬側。左が患者さんの右）。続いている区間は1本の矢印にまとめ、数字は測る順
+function routeSVG(blocks, merge = true) { // merge=false（自分で作る）は区間ごとに描き、番号を下の一覧と合わせる
+  const Y = { ub: 14, ul: 34, ll: 58, lb: 78 };
+  const segs = [];
+  for (const b of blocks) {
+    const up = b.q <= 2, both = b.side.length === 2;
+    const firstSide = both ? b.side[0] : b.side;
+    const row = (sd) => (up ? (sd === 'b' ? 'ub' : 'ul') : (sd === 'b' ? 'lb' : 'll'));
+    const key = both ? `z${up}${b.side}` : row(b.side);
+    const right = (b.q === 1 || b.q === 4) === (b.dir === 'in'); // 画面で右へ進む
+    const [lo, hi] = b.q === 1 || b.q === 4 ? [10, 78] : [82, 150];
+    const x0 = right ? lo : hi, x1 = right ? hi : lo;
+    const last = segs[segs.length - 1];
+    if (merge && last && last.key === key && last.right === right && Math.abs(last.x1 - x0) <= 6) { last.x1 = x1; continue; } // 正中をまたいで続く
+    segs.push({ key, right, x0, x1, both, rowA: row(firstSide), rowB: both ? row(b.side[1]) : null });
+  }
+  const paths = segs.map((g, i) => {
+    const d = g.right ? 1 : -1, sx = g.x0 + d * 9;
+    let path;
+    if (!g.both) path = `M${sx} ${Y[g.rowA]}H${g.x1 - (merge ? 0 : d * 3)}`;
+    else { // 1歯ずつ：2つの段を行き来する
+      const pts = []; let x = sx, k = 0;
+      while ((g.x1 - x) * d > 0) { pts.push(`${x.toFixed(1)} ${Y[k % 2 ? g.rowB : g.rowA]}`); x += d * 7; k++; }
+      path = `M${pts.join(' L')}`;
+    }
+    const ny = Y[g.rowA];
+    return `<path d="${path}"/><g class="rn"><circle cx="${g.x0}" cy="${ny}" r="7"/><text x="${g.x0}" y="${ny + 3.5}">${i + 1}</text></g>`;
+  }).join('');
+  return `<svg class="route" viewBox="0 0 160 92" aria-hidden="true"><g class="rrow">${[6, 26, 50, 70].map((y) => `<rect x="4" y="${y}" width="152" height="16" rx="3"/>`).join('')}</g>
+    <line x1="80" y1="2" x2="80" y2="90" class="rmid"/>
+    <defs><marker id="rarr" viewBox="0 0 8 8" refX="6" refY="4" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 8 4 0 8z" class="rhead"/></marker></defs>
+    <g class="rpath" marker-end="url(#rarr)">${paths.replace(/<g class="rn">[\s\S]*?<\/g>/g, '')}</g>${(paths.match(/<g class="rn">[\s\S]*?<\/g>/g) || []).join('')}
+    ${blocks.length ? '' : '<text x="80" y="54" class="rpen">✏️</text>'}</svg>`;
+}
 function orderPreviewHTML(blocks) {
-  const cell = (q, side) => {
-    const hits = blocks.map((b, i) => ({ b, i })).filter(({ b }) => b.q === q && (b.side === side || b.side.length === 2));
-    if (!hits.length) return '<td class="opv none">—</td>';
-    return `<td class="opv">${hits.map(({ b, i }) => {
-      const right = (q === 1 || q === 4) === (b.dir === 'in'); // 画面で右へ進むか
-      return `<span><b>${i + 1}</b>${right ? '→' : '←'}${b.side.length === 2 ? `<small>${b.side === 'bl' ? '頬→舌' : '舌→頬'}</small>` : ''}</span>`;
-    }).join('')}</td>`;
-  };
   const first = seqFromBlocks(blocks).slice(0, 9).map((x) => `${toothName(x.t)}${sideName(x.t, x.k[0])[0]}${POS[x.k[1]][0]}`);
-  return `<table class="opview"><tr><th>上 頬側</th>${cell(1, 'b')}${cell(2, 'b')}</tr><tr><th>上 口蓋側</th>${cell(1, 'l')}${cell(2, 'l')}</tr>
-    <tr class="osep"><th>下 舌側</th>${cell(4, 'l')}${cell(3, 'l')}</tr><tr><th>下 頬側</th>${cell(4, 'b')}${cell(3, 'b')}</tr>
-    <tr class="ocap"><th></th><td>右（患者の右）</td><td>左</td></tr></table>
-    <p class="ofirst">最初の9か所：${first.join(' → ')} …</p>`;
+  return `<p class="ofirst">最初の9か所：${first.join(' → ')} …</p>`;
 }
 
 /* ================= 設定・バックアップ ================= */
