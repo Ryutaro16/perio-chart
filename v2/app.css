@@ -194,17 +194,35 @@ dialog::backdrop { background: rgba(15, 23, 42, .35); }
 /* 音声入力中は、チャートの今の場所を目立たせる */
 .chart.voiceon td.cur, .voiceon .chart td.cur { background: #dbeafe; box-shadow: inset 0 0 0 3px var(--cur); animation: curpulse 1.6s ease-in-out infinite; }
 @keyframes curpulse { 50% { box-shadow: inset 0 0 0 3px var(--cur), 0 0 0 3px rgba(37, 99, 235, .35); } }
-.vlog { max-height: 55vh; overflow: auto; border: 1px solid var(--line); border-radius: 10px; }
-.vlog table { width: 100%; border-collapse: collapse; font-size: 14px; }
-.vlog th { text-align: left; font-size: 12px; color: var(--sub); padding: 6px 8px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: #fff; }
-.vlog td { padding: 6px 8px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
-.vlog td.nw { white-space: nowrap; }
-.vlog .okb { min-width: 40px; min-height: 36px; border: 1px solid var(--line); background: #fff; border-radius: 8px; font-size: 18px; font-weight: 700; margin-right: 4px; color: var(--accent); }
-.vlog .okb.ng { color: #b91c1c; }
-.vlog .okb.on { background: var(--accent); border-color: var(--accent); color: #fff; }
-.vlog .okb.ng.on { background: #b91c1c; border-color: #b91c1c; }
-.vlog input.fix { width: 100%; min-width: 180px; font-size: 16px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; }
-.vlog tr.ngrow td { background: #fff5f5; }
+.vlog { max-height: 58vh; overflow: auto; display: flex; flex-direction: column; gap: 8px; padding: 2px; }
+.vlogsum { margin: 4px 0 8px; font-size: 14px; color: var(--sub); }
+.vlogsum .ok { color: var(--accent); margin-left: 6px; } .vlogsum .ng { color: #b91c1c; margin-left: 6px; }
+.hint .hl { background: #fef3c7; padding: 0 4px; border-radius: 4px; }
+.vcard { border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px 8px 12px; background: #fff; }
+.vcard.isok { border-color: var(--accent); background: #f0fdfa; }
+.vcard.isng { border-color: #b91c1c; background: #fff5f5; }
+.vctop { display: flex; gap: 10px; font-size: 12px; color: var(--sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vcstart { font-weight: 700; }
+.vcinfo { overflow: hidden; text-overflow: ellipsis; }
+.vcmain { display: flex; gap: 10px; align-items: center; }
+.vctext { flex: 1; min-width: 0; }
+.vcline { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; margin-top: 2px; }
+.vcheard { font-size: 17px; word-break: break-all; }
+.vcarrow { color: var(--sub); }
+.vcres { font-size: 14px; word-break: break-all; }
+.vcres.warn { background: #fef3c7; border-radius: 6px; padding: 1px 6px; }
+.vcbtns { flex: none; display: flex; gap: 8px; }
+.vjb { min-height: 44px; padding: 0 12px; border: 2px solid var(--line); background: #fff; border-radius: 10px; font-size: 15px; font-weight: 800; }
+.vjb.okj { color: var(--accent); } .vjb.ngj { color: #b91c1c; }
+.vjb.okj.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.vjb.ngj.on { background: #b91c1c; border-color: #b91c1c; color: #fff; }
+.vcwhy { margin-top: 8px; padding-top: 8px; border-top: 1px dashed #f5b5b5; }
+.vcq { font-size: 13px; font-weight: 700; color: #b91c1c; }
+.vchips { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 8px; }
+.vchip { min-height: 44px; padding: 0 14px; border: 2px solid #f5b5b5; background: #fff; border-radius: 22px; font-size: 15px; font-weight: 700; color: #7f1d1d; }
+.vchip.on { background: #b91c1c; border-color: #b91c1c; color: #fff; }
+.vcard input.fix { width: 100%; font-size: 16px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+@media (max-width: 640px) { .vcmain { flex-direction: column; align-items: stretch; } .vcbtns .vjb { flex: 1; } }
 .vtcard { text-align: center; padding: 22px 16px; }
 .vtlab { color: var(--sub); font-size: 15px; }
 .vtstart { color: var(--accent); font-weight: 700; margin-top: 6px; min-height: 1.4em; }

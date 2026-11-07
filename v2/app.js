@@ -1134,26 +1134,56 @@ function addVoiceLog(text, startIdx) {
   saveVoiceLog();
 }
 const saveVoiceLog = () => DB.put('settings', { key: 'voicelog', items: voice.log }).catch(() => {});
+// 違っていた行は、どう違ったかを選ぶだけでよい（「正しくは」は分かるときだけ）
+const VLOG_WHY = [['miss', '入らなかった'], ['num', '数字が違う'], ['site', '場所が違う'], ['extra', '言っていないのに入った'], ['other', 'その他']];
+const vlogWhy = (l) => (VLOG_WHY.find(([k]) => k === l.why) || [])[1] || '';
+function vlogCard(l) {
+  const warn = WARN_RE.test(l.result || '');
+  return `<div class="vcard${l.ok === true ? ' isok' : l.ok === false ? ' isng' : ''}" data-card="${l.id}">
+    <div class="vcmain">
+      <div class="vctext"><div class="vctop"><span>${esc(l.time.replace(/^\d+\/\d+\/\d+\s*/, ''))}</span>${l.start ? `<span class="vcstart">開始 ${esc(l.start)}</span>` : ''}${l.info ? `<span class="vcinfo">${esc(l.info)}</span>` : ''}</div>
+        <div class="vcline"><b class="vcheard">「${esc(l.raw)}」</b><span class="vcarrow">→</span><span class="vcres${warn ? ' warn' : ''}">${esc(l.result)}</span></div></div>
+      <div class="vcbtns"><button class="vjb okj${l.ok === true ? ' on' : ''}" data-ok="${l.id}" data-v="1">○ 合っている</button><button class="vjb ngj${l.ok === false ? ' on' : ''}" data-ok="${l.id}" data-v="0">× 違う</button></div>
+    </div>
+    ${l.ok === false ? `<div class="vcwhy"><span class="vcq">どう違いましたか？</span>
+      <div class="vchips">${VLOG_WHY.map(([k, t]) => `<button class="vchip${l.why === k ? ' on' : ''}" data-why="${l.id}" data-k="${k}">${t}</button>`).join('')}</div>
+      <input class="fix" data-fix="${l.id}" value="${esc(l.correct)}" placeholder="本当に言った言葉（分かれば。例：右上6 近心 4）"></div>` : ''}
+  </div>`;
+}
 function showVoiceLog() {
-  const okBtns = (l) => `<button class="okb${l.ok === true ? ' on' : ''}" data-ok="${l.id}" data-v="1">○</button><button class="okb ng${l.ok === false ? ' on' : ''}" data-ok="${l.id}" data-v="0">×</button>`;
-  const rows = voice.log.map((l) => `<tr><td class="nw">${esc(l.time)}</td><td>${esc(l.start || '')}</td><td>「${esc(l.raw)}」</td><td>${esc(l.result)}${l.info ? `<small class="vinfo">${esc(l.info)}</small>` : ''}</td>
-    <td class="nw">${okBtns(l)}</td><td>${l.ok === false ? `<input class="fix" data-fix="${l.id}" value="${esc(l.correct)}" placeholder="例：右上6 頬側 近心 4">` : ''}</td></tr>`).join('');
+  const n = voice.log.length, ngN = voice.log.filter((l) => l.ok === false).length, okN = voice.log.filter((l) => l.ok === true).length;
   openDialog(`<div class="dlg-body"><h2>聞き取りの記録（新しい順）</h2>
-    <p class="hint">間違っていた行は「×」を押して、「正しくは」に本当に言った内容を書いてください。「記録を書き出す」で私に送れます。</p>
-    <div class="vlog">${rows ? `<table><thead><tr><th>時刻</th><th>開始位置</th><th>聞き取った言葉</th><th>入力した内容</th><th>判定</th><th>正しくは</th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="empty">まだ記録がありません</p>'}</div>
-    <div class="dlg-actions"><button class="btn" id="vlogTest">読み上げテスト</button><div class="grow"></div><button class="btn" id="vlogClear" ${voice.log.length ? '' : 'disabled'}>記録を消す</button><button class="btn" id="vlogExport">記録を書き出す</button><button class="btn primary" data-close>閉じる</button></div></div>`, true);
+    <p class="hint">違っていた行だけ「× 違う」を押して、どう違ったかを選んでください（合っている行は押さなくて大丈夫です）。<span class="hl">黄色</span>はアプリが入れなかった行です。「記録を書き出す」で私に送れます。</p>
+    ${n ? `<p class="vlogsum">${n}件　<b class="ok">○ ${okN}</b>　<b class="ng">× ${ngN}</b></p>` : ''}
+    <div class="vlog">${n ? voice.log.map(vlogCard).join('') : '<p class="empty">まだ記録がありません</p>'}</div>
+    <div class="dlg-actions"><button class="btn" id="vlogTest">読み上げテスト</button><div class="grow"></div><button class="btn" id="vlogClear" ${n ? '' : 'disabled'}>記録を消す</button><button class="btn" id="vlogExport">記録を書き出す</button><button class="btn primary" data-close>閉じる</button></div></div>`, true);
   const d = $('#dlg');
-  d.querySelectorAll('[data-ok]').forEach((b) => (b.onclick = () => {
-    const l = voice.log.find((x) => x.id === b.dataset.ok);
-    const v = b.dataset.v === '1';
-    l.ok = l.ok === v ? null : v;
-    saveVoiceLog();
-    showVoiceLog();
-  }));
-  d.querySelectorAll('[data-fix]').forEach((inp) => (inp.onchange = () => { voice.log.find((x) => x.id === inp.dataset.fix).correct = inp.value.trim(); saveVoiceLog(); }));
+  const find = (id) => voice.log.find((x) => x.id === id);
+  // 押した行だけ描き直す（一覧のスクロール位置を保つ）
+  const redraw = (l) => {
+    const old = d.querySelector(`[data-card="${l.id}"]`);
+    old.insertAdjacentHTML('afterend', vlogCard(l)); old.remove();
+    bind(d.querySelector(`[data-card="${l.id}"]`));
+    const sum = d.querySelector('.vlogsum');
+    if (sum) sum.innerHTML = `${voice.log.length}件　<b class="ok">○ ${voice.log.filter((x) => x.ok === true).length}</b>　<b class="ng">× ${voice.log.filter((x) => x.ok === false).length}</b>`;
+  };
+  const bind = (root) => {
+    root.querySelectorAll('[data-ok]').forEach((b) => (b.onclick = () => {
+      const l = find(b.dataset.ok), v = b.dataset.v === '1';
+      l.ok = l.ok === v ? null : v;
+      saveVoiceLog(); redraw(l);
+    }));
+    root.querySelectorAll('[data-why]').forEach((b) => (b.onclick = () => {
+      const l = find(b.dataset.why);
+      l.why = l.why === b.dataset.k ? '' : b.dataset.k;
+      saveVoiceLog(); redraw(l);
+    }));
+    root.querySelectorAll('[data-fix]').forEach((inp) => (inp.onchange = () => { find(inp.dataset.fix).correct = inp.value.trim(); saveVoiceLog(); }));
+  };
+  bind(d);
   $('#vlogExport').onclick = () => exportCSV(`voice-log-${stamp()}.csv`, '聞き取りの記録',
-    ['時刻', '開始位置', '聞き取った言葉', '入力した内容', '判定', '正しくは', '途中の様子'],
-    voice.log.map((l) => [l.time, l.start, l.raw, l.result, l.ok === true ? '○' : l.ok === false ? '×' : '', l.correct, l.info || '']));
+    ['時刻', '開始位置', '聞き取った言葉', '入力した内容', '判定', '正しくは', '途中の様子', 'どう違うか'],
+    voice.log.map((l) => [l.time, l.start, l.raw, l.result, l.ok === true ? '○' : l.ok === false ? '×' : '', l.correct, l.info || '', l.ok === false ? vlogWhy(l) : '']));
   $('#vlogClear').onclick = async () => {
     const ok = await askConfirm(`聞き取りの記録（${voice.log.length}件）をすべて消しますか？\n必要なら、先に「記録を書き出す」で保存してください。`, '消す', true);
     if (ok) { voice.log = []; await saveVoiceLog(); }
@@ -1630,20 +1660,22 @@ function showVoiceHelp() {
 // 聞き取った文字を、入力の指示（トークン）に分ける
 const KD = { '〇': 0, '零': 0, '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9 };
 const SPEECH_FIX = [
-  [/みぎうえ|右へ|右え|みぎえ|右手/g, '右上'], [/ひだりうえ|左へ|左え|ひだりえ|左手|ひな上|ひなうえ/g, '左上'], [/依頼し?た/g, '左下'], [/みぎした/g, '右下'], [/ひだりした|ひな下|ひなした/g, '左下'],
+  [/みぎうえ|右へ|右え|みぎえ|右手|UA(?![a-zA-Z])/g, '右上'], [/ひだりうえ|左へ|左え|ひだりえ|左手|ひな上|ひなうえ/g, '左上'], [/依頼し?た/g, '左下'], [/みぎした/g, '右下'], [/ひだりした|ひな下|ひなした/g, '左下'],
+  [/([1-8])0,000/g, '$1万'], [/([1-8])\s*万/g, '$1番'], // 「7番 遠心」→「7万円新」「70,000」：数字のあとの「万」は「番」
   // 部位の言葉の聞き間違い。「聞き取りの記録」で見つかったものを元に、音の組み合わせで読み替える
   [/(右上|左上|右下|左下)?\s*([1-8])?\s*([5五後高口公校甲工交好向広])?\s*倍速/g, (m, q, d, pre) => (q ? `${q}${d || ''} 口蓋側` : `${pre && d ? d : ''} 口蓋側`)],
-  [/頰側|ほお側|ほおがわ|頬がわ|きょうそく|右足|[教協共強胸京凶狭恐鏡境競秒驚予][側則速測即息足束底]/g, '頬側'],
+  [/(右上|左上|右下|左下)?\s*([1-8])?\s*([5五後高口公校甲工交好向広])?\s*階/g, (m, q, d, pre) => (!pre && d !== '5' ? m : q ? `${q}${d || ''} 口蓋側` : `${pre && d ? d : ''} 口蓋側`)], // 「5階」＝口蓋側
+  [/頰側|ほお側|ほおがわ|頬がわ|きょうそく|右足|[教協共強胸京凶狭恐鏡境競秒驚予][側則速測即息足束底職]/g, '頬側'],
   [/こうがい(?:側|そく|がわ)|口蓋がわ|[口公甲高校構郊工交広向好号後][外害蓋府布付凱街](?:側|そく|即|則|速|測|足|束|息)?/g, '口蓋側'],
-  [/ぜっそく|ぜつそく|舌がわ|したがわ|[舌絶接][側速息則測足束底触]/g, '舌側'],
-  [/きんしん|PC|ピーシー|検診|健診|検心|けんしん|[禁近金謹筋均菌勤][親心震振身新信森慎止進鍼]/g, '近心'], [/[遠延円炎園援演塩]後/g, '遠心 5'], [/えんしん|[遠延円炎園援演塩]\s*[CＣシ](?![a-zA-Z])|[遠延円炎園援演塩返変][心伸信陣進身親新震振鍼]/g, '遠心'], [/真ん中|まんなか|ちゅうおう|[中注宙柱忠][王央応を]|(側)王/g, (m, sd) => (sd ? sd + '中央' : '中央')],
+  [/ぜっそく|ぜつそく|舌がわ|したがわ|[舌絶接結][側速息則測足束底触]/g, '舌側'],
+  [/きんしん|PC|ピーシー|検診|健診|検心|けんしん|[禁近金謹筋均菌勤][親心震振身新信森慎止進鍼神]/g, '近心'], [/[遠延円炎園援演塩]後/g, '遠心 5'], [/えんしん|えいしん|エイシン|[遠延円炎園援演塩]\s*[CＣシ](?![a-zA-Z])|[遠延円炎園援演塩返変][心伸信陣進身親新震振鍼神]/g, '遠心'], [/真ん中|まんなか|ちゅうおう|[中注宙柱忠][王央応を]|(側)王/g, (m, sd) => (sd ? sd + '中央' : '中央')],
   [/禁\s*(?=遠心)/g, '近心 '], // 「禁遠心」＝近心の聞き落とし＋遠心
   [/ぷらす|\+|クラス|グラス|ブラス/g, 'プラス'], [/ぜんぶ|全部|前部/g, '全部'], [/まいなす/g, 'マイナス'], [/はいのう|排のう/g, '排膿'],
 ];
 // 数字の読み。読みだけでできている部分（ひらがな・カタカナ・同じ音の漢字の並び）に限って数字に直す
 const KANA_NUM = [['きゅう', '9'], ['じゅういち', ' 11! '], ['じゅうに', ' 12! '], ['じゅう', ' 10! '], ['いち', '1'], ['よん', '4'], ['さん', '3'], ['ろく', '6'],
   ['なな', '7'], ['しち', '7'], ['な', '7'], ['はち', '8'], ['ぜろ', '0'], ['に', '2'], ['ご', '5'], ['く', '9']];
-const HOMOPHONE = { 市: '1', 似: '2', 煮: '2', 酸: '3', 参: '3', 産: '3', 散: '3', 予: '4', 後: '5', 語: '5', 碁: '5', 誤: '5', 録: '6', 蜂: '8', 鉢: '8', 急: '9', 級: '9', 球: '9', 灸: '9' };
+const HOMOPHONE = { 市: '1', 似: '2', 煮: '2', 酸: '3', 参: '3', 産: '3', 散: '3', 予: '4', 後: '5', 語: '5', 碁: '5', 誤: '5', 録: '6', 蜂: '8', 鉢: '8', 号: '5', 急: '9', 級: '9', 球: '9', 灸: '9' };
 const toHira = (t) => t.replace(/[\u30a1-\u30f6]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0x60));
 function kanaToDigits(run) {
   let out = '', i = 0;
@@ -1837,7 +1869,8 @@ function handleBopSpeech(raw, provisional, dry) {
   // 歯と部位を言い終えたら（最後の言葉が部位・全部・マイナスなど）、またはエリアを変えたら、その場で文を確定させる（ポケットの部位指定と同じ）
   const lt = toks[toks.length - 1];
   // 出血モードは続けて話せるように、歯ごとやエリアでは区切らない（黙ったときだけ区切る）
-  if (sawNum && !ops.length && !toks.some((t) => ['pos', 'all', 'quad', 'side', 'undo'].includes(t.type))) {
+  const onlyTooth = toks.length === 1 && toks[0].type === 'num' && toks[0].vals.length === 1 && voice.bopTooth; // 「4番」「4」だけ＝歯を選んだ
+  if (sawNum && !ops.length && !onlyTooth && !toks.some((t) => ['pos', 'all', 'quad', 'side', 'undo'].includes(t.type))) {
     done.length = 0;
     done.push('出血モードです。数字は歯の番号として聞いています（ポケットの深さは「🎤 ポケット」）');
   }
@@ -1997,7 +2030,11 @@ function handleSpeech(raw, provisional = false, dry = false) {
     else if (tk.type === 'stop') { if (!dry) voiceStop(); }
   }
   moveToTarget();
-  if (moved && !ops.length) done.push(`${siteName(cur().t, cur().k)} へ移動しました`);
+  if (moved && !ops.length) {
+    done.push(`${siteName(cur().t, cur().k)} へ移動しました`);
+    // 移動しただけのあとは、続きの「中央」「プラス」も移動先に（前に直していた歯や、前に入れた部位に付けない）
+    specDone(cur()); voice.lastSite = null;
+  }
   // 「さささん」「いよいよよ」「ミニに」のように、数字の音だけでできているのに読めなかったときは、黙って捨てずに言い直しを頼む（会話などは知らせない）
   if (!toks.length && !provisional && looksLikeNumbers(raw)) done.push('数字が聞き取れませんでした。もう一度言ってください');
   if (dry) return { ops, done };
