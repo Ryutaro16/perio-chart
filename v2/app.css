@@ -528,3 +528,16 @@ body.pr-portrait #print .chart i.dif { font-size: 6pt; }
 .pgrid col.ctr { width: 11px; }
 .pgrid td.pc.ctr { font-size: 13px; background: #fafbfc; }
 .pgrid td.pc.ctr.p4, .pgrid td.pc.ctr.p6 { font-size: 13px; }
+
+/* 💰 かかった金額（設定画面・AIで読み取る） */
+.costh { font-size: 16px; margin: 16px 0 6px; }
+.costnow { display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px; }
+.costnow b { font-size: 24px; }
+.costtbl { width: 100%; max-width: 520px; border-collapse: collapse; font-size: 15px; font-variant-numeric: tabular-nums; }
+.costtbl td { padding: 7px 4px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+.costtbl td small { display: block; color: var(--sub); font-size: 12px; }
+.costtbl td.r { text-align: right; white-space: nowrap; font-weight: 700; }
+.costtbl tr.sum td { border-top: 2px solid var(--line); border-bottom: 0; }
+.aicost details { margin: 8px 0; }
+.aicost summary { cursor: pointer; color: var(--accent); padding: 4px 0; }
+.pcost { white-space: nowrap; }

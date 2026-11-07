@@ -2312,7 +2312,9 @@ async function showSettings() {
       <section class="card"><h2>紙の取り込み：AIで読み取る</h2>
         <p>紙のチャートの写真を中継サーバー経由で AI（Claude）に送り、数字を読み取ります。1枚 約10〜30円（推定）。写真に写った内容（カルテ番号・ポケットの値・日付など）が外部のAIに送られます。写真も結果もサーバーには残りません。</p>
         <label class="hfield">合言葉 <input id="aipass" type="password" class="text" style="width:240px;font-weight:400" autocomplete="off" placeholder="音声カルテと同じ合言葉"></label>
-        <p class="sub" id="aipassst"></p></section>
+        <p class="sub" id="aipassst"></p>
+        <h3 class="costh">💰 かかった金額</h3>
+        <div id="aicost" class="aicost"><p class="sub">合言葉を入れると表示されます</p></div></section>
       ${guideSettingsHTML()}
       <section class="card"><h2>音声入力の読み上げテスト</h2><p>お題を読み上げて、正しく聞き取れるかを確かめます。結果は記録され、書き出して送れます。</p><button class="btn" id="vtOpen">読み上げテストを開く</button></section>
       <section class="card"><h2>見本データ</h2><p>動作確認用に、架空の患者「見本 太郎」と3回分の検査を追加します。</p><button class="btn" id="demo">見本データを追加</button></section>
@@ -2323,7 +2325,8 @@ async function showSettings() {
   $('#vtOpen').onclick = showVoiceTest;
   const passSt = (p) => ($('#aipassst').textContent = p ? '合言葉は入力済みです（このiPadの中だけに保存。バックアップには入りません）' : 'まだ入力されていません');
   passSt(await aiPass());
-  $('#aipass').onchange = async (e) => { const pass = e.target.value.trim(); await DB.put('settings', { key: 'aiRead', pass }); e.target.value = ''; passSt(pass); };
+  $('#aipass').onchange = async (e) => { const pass = e.target.value.trim(); await DB.put('settings', { key: 'aiRead', pass }); e.target.value = ''; passSt(pass); loadAiCost(); };
+  loadAiCost();
   bindGuideSettings();
   $('#demo').onclick = async () => {
     const { patient, exams } = makeDemo();
@@ -2536,11 +2539,51 @@ async function paperReadAI(d) {
   d.exams = (sheet.exams || []).map(paperNormalizeExam);
   if (!d.exams.length) d.exams = [paperBlankExam()];
   d.source = 'ai';
+  d.aiRuns = [...(d.aiRuns || []), r.yen || 0];
   d.aiYen = (d.aiYen || 0) + (r.yen || 0);
   await savePaper(d);
   await showPaperDraft(d.id);
   const uns = d.exams.reduce((n, e) => n + Object.keys(e.unsure).length, 0);
-  await notify(`${d.exams.length}回分を読み取りました（約${Math.max(1, Math.round(r.yen || 0))}円）。\n${uns ? `黄色の${uns}か所（自信がない所）から、` : ''}写真と見比べて確かめてから登録してください。`);
+  await notify(`${d.exams.length}回分を読み取りました（${yenText(r.yen || 0)}）。\n${uns ? `黄色の${uns}か所（自信がない所）から、` : ''}写真と見比べて確かめてから登録してください。`);
+}
+
+// ---- かかった金額（秘書アプリ・音声カルテと同じ形） ----
+// 1枚ごとの金額は取り込みの下書き（aiRuns・aiYen）に、月ごと・日ごとは中継サーバーの記録（全部のiPadの合計）から
+const yenText = (v) => `約${v < 100 ? v.toFixed(1) : Math.round(v).toLocaleString()}円`;
+const aiCostOf = (d) => (d.aiYen ? `AI ${yenText(d.aiYen)}${(d.aiRuns || []).length > 1 ? `（${d.aiRuns.length}回分）` : ''}` : '');
+async function aiUsage(action) {
+  const res = await fetch(`${AI_API}/api/usage`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Passphrase': await aiPass() }, body: JSON.stringify({ action }) });
+  const r = await res.json().catch(() => ({}));
+  if (!res.ok || r.error) throw new Error(r.error || `読み込めませんでした（${res.status}）`);
+  return r;
+}
+const WD = '日月火水木金土';
+async function loadAiCost() {
+  const box = $('#aicost');
+  if (!box) return;
+  if (!(await aiPass())) { box.innerHTML = '<p class="sub">合言葉を入れると表示されます</p>'; return; }
+  box.innerHTML = '<p class="sub">読み込み中…</p>';
+  let st;
+  try { st = (await aiUsage('perio')).perio; } catch (e) { box.innerHTML = `<p class="sub">${esc(e.message)}</p>`; return; }
+  if (!$('#aicost')) return; // 読み込み中に画面を移った
+  if (!st || !st.months.length) { box.innerHTML = '<p class="sub">まだ使っていません（0円）</p>'; return; }
+  const now = new Date(), thisKey = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}`;
+  const cur = st.months.find((m) => m.key === thisKey) || { n: 0, yen: 0 };
+  const total = st.months.reduce((a, m) => a + m.yen, 0), count = st.months.reduce((a, m) => a + m.n, 0);
+  const monthRow = (m) => { const [y, mo] = m.key.split('-'); return `<tr><td>${y}年${Number(mo)}月<small>${m.n}回・1回 ${yenText(m.yen / m.n)}</small></td><td class="r">${yenText(m.yen)}</td></tr>`; };
+  const dayRow = (d) => { const dt = new Date(d.key + 'T00:00:00'); return `<tr><td>${dt.getMonth() + 1}/${dt.getDate()}(${WD[dt.getDay()]})<small>${d.n}回</small></td><td class="r">${yenText(d.yen)}</td></tr>`; };
+  box.innerHTML = `
+    <div class="costnow"><span>今月</span><b>${yenText(cur.yen)}</b><span class="sub">${cur.n}回</span></div>
+    <table class="costtbl">${st.months.map(monthRow).join('')}
+      <tr class="sum"><td>これまでの合計<small>${count}回・${new Date(st.first).toLocaleDateString('ja-JP')}から</small></td><td class="r">${yenText(total)}</td></tr></table>
+    <details><summary>日ごと</summary><table class="costtbl">${st.days.map(dayRow).join('')}</table></details>
+    <div class="row-tools"><button class="btn" id="aicsv">1回ごとの記録をCSVで書き出す（Excel・Numbers用）</button></div>
+    <p class="sub">すべてのiPadの合計。1ドル150円で計算した目安です。「読み直す」も1回に数えます。写真や読み取った数字は記録しません（日時・待ち時間・金額だけ）。</p>`;
+  $('#aicsv').onclick = async () => {
+    let csv;
+    try { csv = (await aiUsage('perio-csv')).csv; } catch (e) { await notify('書き出せませんでした：' + e.message); return; }
+    try { await saveFile(new File([csv], `ペリオ_AI読み取りの記録_${stamp()}.csv`, { type: 'text/csv' }), 'AI読み取りの記録'); } catch { /* 閉じただけ */ }
+  };
 }
 
 // ---- 取り込みの一覧 ----
@@ -2551,7 +2594,7 @@ async function showPaperList() {
     const n = d.exams.length, uns = d.exams.reduce((s, e) => s + Object.keys(e.unsure || {}).length, 0);
     return `<button class="prow" data-draft="${d.id}">
       ${d.photo ? '<span class="avatar">📷</span>' : '<span class="avatar">📄</span>'}
-      <span class="pname">${d.chartNo ? `No.${esc(d.chartNo)}` : 'カルテ番号 未入力'}<small>${n}回分・${{ ai: 'AIで読み取り', file: 'ファイルから', manual: '手で入力' }[d.source] || ''}・${new Date(d.createdAt).toLocaleDateString('ja-JP')}</small></span>
+      <span class="pname">${d.chartNo ? `No.${esc(d.chartNo)}` : 'カルテ番号 未入力'}<small>${n}回分・${{ ai: 'AIで読み取り', file: 'ファイルから', manual: '手で入力' }[d.source] || ''}${d.aiYen ? `（${yenText(d.aiYen)}）` : ''}・${new Date(d.createdAt).toLocaleDateString('ja-JP')}</small></span>
       <span class="pkeys">${d.doneAt ? '<span class="kchip ok">登録済み</span>' : uns ? `<span class="kchip warn">要確認 ${uns}か所</span>` : '<span class="kchip">確認中</span>'}</span>
       <span class="chev">›</span></button>`;
   };
@@ -2633,6 +2676,7 @@ async function showPaperDraft(id) {
       <span class="sub" id="pmatch"></span><div class="grow"></div>
       <label class="btn">${d.photo ? '写真を差し替え' : '📷 写真を付ける'}<input type="file" id="pphoto2" class="vh" accept="image/*" capture="environment"></label>
       ${d.photo ? `<button class="btn${d.source === 'ai' ? '' : ' primary'}" id="pai">🤖 ${d.source === 'ai' ? 'AIで読み直す' : 'AIで読み取る'}</button>` : ''}
+      ${d.aiYen ? `<span class="sub pcost">${aiCostOf(d)}</span>` : ''}
       <button class="btn danger" id="pdel">削除</button>
       <button class="btn primary" id="preg">${d.doneAt ? '登録済み' : '登録する'}</button></header>
     <div class="paperwrap">
