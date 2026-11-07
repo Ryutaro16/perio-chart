@@ -27,6 +27,7 @@ const isUpper = (t) => quad(t) <= 2;
 const isPtRight = (t) => quad(t) === 1 || quad(t) === 4;
 const isMid = (t) => t === 21 || t === 31;
 const isMolar = (t) => t % 10 >= 6;
+const QNAME = { 1: '右上', 2: '左上', 3: '左下', 4: '右下' };
 const toothName = (t) => ({ 1: '右上', 2: '左上', 3: '左下', 4: '右下' })[quad(t)] + (t % 10);
 const sideName = (t, side) => (side === 'b' ? '頬側' : isUpper(t) ? '口蓋側' : '舌側');
 const POS = { d: '遠心', c: '中央', m: '近心' };
@@ -46,35 +47,100 @@ function furcAt(t, side, pos) {
 }
 
 /* ================= 測定順 ================= */
-const ORDERS = {
-  z: {
-    label: '上顎を頬側→口蓋側、次に下顎を頬側→舌側',
-    desc: '上顎頬側 右上→左上 → 上顎口蓋側 左上→右上 → 下顎頬側 左下→右下 → 下顎舌側 右下→左下',
-    segs: [['b', UPPER, 1], ['l', UPPER, -1], ['b', LOWER, -1], ['l', LOWER, 1]],
-  },
-  loop: {
-    label: '頬側を一周 → 舌側を一周',
-    desc: '上顎頬側 右上→左上 → 下顎頬側 左下→右下 → 下顎舌側 右下→左下 → 上顎口蓋側 左上→右上（一筆書き）',
-    segs: [['b', UPPER, 1], ['b', LOWER, -1], ['l', LOWER, 1], ['l', UPPER, -1]],
-  },
+// 順番は「区間」の並び。区間＝ブロック（q：1右上 2左上 3左下 4右下）× 側（b 頬側／l 口蓋・舌側／bl・lb 1歯ずつ）× 向き（in 8→1／out 1→8）。
+// 1歯の中は進む向きに沿って（8→1なら遠心→近心）。1歯ずつは、先の側を進む向きに、あとの側を折り返して測る。flip で1歯の中を逆に
+const ORDER_PRESETS = {
+  z: { label: '列ごと', desc: '上の頬側 → 上の口蓋側 → 下の頬側 → 下の舌側',
+    blocks: [[1, 'b', 'in'], [2, 'b', 'out'], [2, 'l', 'in'], [1, 'l', 'out'], [3, 'b', 'in'], [4, 'b', 'out'], [4, 'l', 'in'], [3, 'l', 'out']] },
+  loop: { label: '一筆書き', desc: '頬側を一周 → 舌側（口蓋側）を一周',
+    blocks: [[1, 'b', 'in'], [2, 'b', 'out'], [3, 'b', 'in'], [4, 'b', 'out'], [4, 'l', 'in'], [3, 'l', 'out'], [2, 'l', 'in'], [1, 'l', 'out']] },
+  tooth: { label: '1歯ずつ', desc: '1本ごとに頬側と舌側（口蓋側）を測ってから次の歯へ',
+    blocks: [[1, 'bl', 'in'], [2, 'bl', 'out'], [3, 'bl', 'in'], [4, 'bl', 'out']] },
 };
-function buildSeq(order) {
+const MIRROR_Q = { 1: 2, 2: 1, 3: 4, 4: 3 };
+const SIDE_LABEL = { b: '頬側', l: '口蓋・舌側', bl: '1歯ずつ 頬→舌', lb: '1歯ずつ 舌→頬' };
+const blockSideName = (q, side) => (side === 'b' ? '頬側' : side === 'l' ? (q <= 2 ? '口蓋側' : '舌側') : '');
+const blockLabel = (bl) => `${QNAME[bl.q]}${blockSideName(bl.q, bl.side)}`;
+// 順番の決め方 → 区間の並び。spec＝{ preset: 'z'|'loop'|'tooth', first: 'b'|'l', start: 'R'|'L' } または { preset: 'custom', blocks: [...] }
+function orderBlocks(spec) {
+  if (typeof spec === 'string') spec = { preset: spec };
+  spec = spec || { preset: 'z' };
+  if (spec.preset === 'custom') return (spec.blocks || []).map((b) => ({ q: b.q, side: b.side, dir: b.dir, flip: !!b.flip }));
+  const pr = ORDER_PRESETS[spec.preset] || ORDER_PRESETS.z;
+  return pr.blocks.map(([q, side, dir]) => ({
+    q: spec.start === 'L' ? MIRROR_Q[q] : q,
+    side: spec.preset === 'tooth' && spec.first === 'l' ? 'lb' : side, dir, flip: false,
+  }));
+}
+const quadTeeth = (q, dir) => { const a = [8, 7, 6, 5, 4, 3, 2, 1].map((n) => q * 10 + n); return dir === 'out' ? a.reverse() : a; };
+const sweep = (dir, flip) => ((dir === 'in') !== !!flip ? ['d', 'c', 'm'] : ['m', 'c', 'd']);
+// 部位の並び。各部位に区間の番号 a と読み上げの名前 al（「右上頬側」）を付ける。音声の区切り・案内は区間で判断する
+function seqFromBlocks(blocks) {
   const seq = [];
-  for (const [side, row, dir] of (ORDERS[order] || ORDERS.z).segs) {
-    for (const t of dir > 0 ? row : [...row].reverse()) {
-      const keys = screenKeys(t, side);
-      for (const k of dir > 0 ? keys : [...keys].reverse()) seq.push({ t, k });
+  blocks.forEach((bl, a) => {
+    const al = blockLabel(bl), pos = sweep(bl.dir, bl.flip);
+    for (const t of quadTeeth(bl.q, bl.dir)) {
+      if (bl.side === 'b' || bl.side === 'l') { for (const p of pos) seq.push({ t, k: bl.side + p, a, al }); continue; }
+      const [s1, s2] = bl.side === 'bl' ? ['b', 'l'] : ['l', 'b'];
+      for (const p of pos) seq.push({ t, k: s1 + p, a, al });
+      for (const p of [...pos].reverse()) seq.push({ t, k: s2 + p, a, al });
     }
+  });
+  return seq;
+}
+const buildSeq = (spec) => seqFromBlocks(orderBlocks(spec));
+// 区間の並びで、抜けている所・重なっている所（自分で作るときの確認）
+function orderProblems(blocks) {
+  const n = {};
+  for (const s of seqFromBlocks(blocks)) n[`${s.t}${s.k}`] = (n[`${s.t}${s.k}`] || 0) + 1;
+  const miss = [], dup = [];
+  for (const q of [1, 2, 3, 4]) for (const side of ['b', 'l']) {
+    const keys = quadTeeth(q, 'in').flatMap((t) => ['d', 'c', 'm'].map((p) => `${t}${side}${p}`));
+    const name = `${QNAME[q]}${blockSideName(q, side)}`;
+    if (keys.some((k) => !n[k])) miss.push(name);
+    if (keys.some((k) => n[k] > 1)) dup.push(name);
+  }
+  return { miss, dup };
+}
+// 基本検査（1歯1点）の歯の並び。'same'＝精密検査の順番で、歯が初めて出てくる順。区間はブロック（右上・左上…）ごと
+function basicSeqFrom(basicSpec, preciseSpec) {
+  let teeth;
+  if (basicSpec && basicSpec.preset === 'custom') teeth = (basicSpec.blocks || []).flatMap((b) => quadTeeth(b.q, b.dir));
+  else teeth = buildSeq(preciseSpec).map((s) => s.t);
+  const seen = new Set(), seq = [];
+  let a = -1, lastQ = 0;
+  for (const t of teeth) {
+    if (seen.has(t)) continue;
+    seen.add(t);
+    if (quad(t) !== lastQ) { a++; lastQ = quad(t); }
+    seq.push({ t, k: 'x', a, al: QNAME[quad(t)] });
   }
   return seq;
+}
+// 順番の説明（設定画面・新しい検査の画面）
+function orderSummary(spec) {
+  if (!spec) return 'いつもの順番';
+  if (spec.preset === 'custom') return `自分で作った順番（${(spec.blocks || []).length}区間）`;
+  const pr = ORDER_PRESETS[spec.preset] || ORDER_PRESETS.z;
+  return `${pr.label}${spec.preset === 'tooth' ? `（${spec.first === 'l' ? '舌側' : '頬側'}から）` : ''}・${spec.start === 'L' ? '左上8' : '右上8'}から`;
+}
+function basicSummary(spec) {
+  if (!spec || spec.preset !== 'custom') return '精密検査と同じ流れ';
+  return `自分で作った順番（${spec.blocks.map((b) => `${QNAME[b.q]}${b.dir === 'in' ? '8→1' : '1→8'}`).join('・')}）`;
 }
 const MOB_SEQ = [...UPPER, ...[...LOWER].reverse()];
 const FURC_SEQ = MOB_SEQ.filter(isMolar).flatMap((t) => furcKeys(t).map((f) => ({ t, f })));
 // 基本検査：ポケットは1歯1点（いちばん深い所。部位キー 'x'）＋動揺度＋出血。精密検査は6点（kind なし）
 const isBasic = (ex) => !!ex && ex.kind === 'basic';
+// 検査者（設定で登録した人）ごとの順番。登録していない人・「いつもの順番」の人は settings.orderSpec / basicOrder
+const examinerOf = (name) => (settings.examiners || []).find((e) => e.name && e.name === String(name || '').trim()) || null;
+const defaultSpec = () => settings.orderSpec || { preset: settings.order || 'z', start: 'R', first: 'b' };
+const preciseSpecFor = (name) => { const e = examinerOf(name); return (e && e.order) || defaultSpec(); };
+const basicSpecFor = (name) => { const e = examinerOf(name); return e ? (e.order ? e.basicOrder || null : e.basicOrder || settings.basicOrder || null) : settings.basicOrder || null; };
+const seqForExam = (ex) => (isBasic(ex) ? basicSeqFrom(basicSpecFor(ex.examiner), preciseSpecFor(ex.examiner)) : buildSeq(preciseSpecFor(ex.examiner)));
 const examSites = (ex) => (isBasic(ex) ? ['x'] : SITES);
 const kindName = (ex) => (isBasic(ex) ? '基本検査' : '精密検査');
-const buildBasicSeq = () => MOB_SEQ.map((t) => ({ t, k: 'x' })); // 右上8→左上8 → 左下8→右下8
+
 
 /* ================= データベース（IndexedDB） ================= */
 const DB = {
@@ -108,7 +174,7 @@ const GUIDE_DEFAULTS = {
   where: true, modeVoice: true, foot: false, // 操作：「今どこ？」／声でモード切り替え／フットスイッチ
   rate: 'mid', // 声の速さ
 };
-let settings = { key: 'settings', clinicName: '', order: 'z', lastBackupAt: null, lastExaminer: '', guide: { ...GUIDE_DEFAULTS } };
+let settings = { key: 'settings', clinicName: '', order: 'z', orderSpec: null, basicOrder: null, examiners: [], lastBackupAt: null, lastExaminer: '', guide: { ...GUIDE_DEFAULTS } };
 async function loadSettings() {
   const s = await DB.get('settings', 'settings');
   if (s) settings = { ...settings, ...s };
@@ -584,7 +650,10 @@ function newExamDialog(p, prev) {
       ${kindOpt('precise', '精密検査', '6点法。ポケット・出血・排膿・動揺度・分岐部・プラーク')}
       ${kindOpt('basic', '基本検査', '1歯1点（いちばん深い所）。ポケット・出血・排膿・動揺度')}</div></div>
     <label class="field"><span>検査日</span><input type="date" name="date" value="${today()}" required></label>
-    <label class="field"><span>検査者</span><input name="examiner" value="${esc(settings.lastExaminer)}" autocomplete="off"></label>
+    <div class="field"><span>検査者</span>
+      ${(settings.examiners || []).length ? `<div class="exchips">${settings.examiners.map((x) => `<button type="button" class="exchip" data-ex="${esc(x.name)}">${esc(x.name)}</button>`).join('')}</div>` : ''}
+      <input name="examiner" value="${esc(settings.lastExaminer)}" autocomplete="off" placeholder="${(settings.examiners || []).length ? 'ほかの人は名前を入力' : '名前'}">
+      <small class="exhow" id="exhow"></small></div>
     ${prev ? `<label class="check" id="carryopt"><input type="checkbox" name="carry"><span>前回（${fmtDate(prev.date)}・${kindName(prev)}）のデータを引き継ぐ
         <small id="carrywhat"></small></span></label>
       <p class="hint" id="carryhint">欠損歯は前回から自動で引き継ぎます。</p>` : ''}
@@ -598,8 +667,17 @@ function newExamDialog(p, prev) {
     $('#carrywhat').textContent = `${basic ? 'ポケット・出血・排膿・動揺度' : 'ポケット・出血・排膿・動揺度・分岐部・プラーク'}。引き継いだ値は薄い色で表示され、確定するまで「未確定」になります`;
     $('#carryhint').textContent = same ? '欠損歯は前回から自動で引き継ぎます。' : `前回は${kindName(prev)}なので、欠損歯だけ引き継ぎます。`;
   };
-  $('#nf').querySelectorAll('input[name=kind]').forEach((r) => (r.onchange = syncCarry));
-  syncCarry();
+  // 選んだ検査者の入れ方を見せる
+  const syncEx = () => {
+    const f = $('#nf'), name = f.examiner.value.trim(), basic = f.kind.value === 'basic';
+    f.querySelectorAll('[data-ex]').forEach((b) => b.classList.toggle('on', b.dataset.ex === name));
+    const who = examinerOf(name);
+    $('#exhow').textContent = `入れ方：${basic ? basicSummary(basicSpecFor(name)) : orderSummary(preciseSpecFor(name))}${who ? `（${who.name}の設定）` : '（いつもの順番）'}`;
+  };
+  $('#nf').querySelectorAll('[data-ex]').forEach((b) => (b.onclick = () => { $('#nf').examiner.value = b.dataset.ex; syncEx(); }));
+  $('#nf').examiner.oninput = syncEx;
+  $('#nf').querySelectorAll('input[name=kind]').forEach((r) => (r.onchange = () => { syncCarry(); syncEx(); }));
+  syncCarry(); syncEx();
   $('#nf').onsubmit = async (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
@@ -649,7 +727,7 @@ async function openEditor(examId) {
   voiceStop(true);
   for (const t of ALL) exam.teeth[t].fur ||= {};
   if (exam.pcrNone === undefined) { exam.pcrNone = !!exam.pcrDone && !hasPlaque(exam); delete exam.pcrDone; }
-  Object.assign(ed, { exam, patient, mode: 'ppd', seq: isBasic(exam) ? buildBasicSeq() : buildSeq(settings.order), flash: '', undo: null, bulkVal: 3, mobBulk: 0, plRange: 'all', plFaces: new Set() });
+  Object.assign(ed, { exam, patient, mode: 'ppd', seq: seqForExam(exam), flash: '', undo: null, bulkVal: 3, mobBulk: 0, plRange: 'all', plFaces: new Set() });
   ed.cur = firstEmpty(ed.seq, (s) => s.t, (s) => exam.teeth[s.t].ppd[s.k] == null);
   ed.mob = firstEmpty(MOB_SEQ, (t) => t, (t) => exam.teeth[t].mob == null);
   ed.fur = firstEmpty(FURC_SEQ, (s) => s.t, (s) => exam.teeth[s.t].fur[s.f] == null);
@@ -658,13 +736,14 @@ async function openEditor(examId) {
       <button class="btn ghost" id="back">‹ ${esc(patient.name)} 様</button>
       ${isBasic(exam) ? '<span class="kindtag">基本検査</span>' : ''}
       <label class="mini">検査日 <input type="date" id="exdate" value="${esc(exam.date)}"></label>
-      <label class="mini">検査者 <input id="exby" value="${esc(exam.examiner || '')}" autocomplete="off"></label>
+      <label class="mini">検査者 <input id="exby" value="${esc(exam.examiner || '')}" autocomplete="off" list="exlist"></label>
+      <datalist id="exlist">${(settings.examiners || []).map((x) => `<option value="${esc(x.name)}">`).join('')}</datalist>
       <div class="grow"></div>
       ${gearBtn(false)}
       <span id="savest" class="savest">保存済み</span>
       <button class="btn" id="difbtn" hidden></button>
-      ${isBasic(exam) ? '' : `<button class="btn mic" id="mic">🎤 ポケット</button>
-      <button class="btn mic" id="micbop">🎤 出血</button>`}
+      <button class="btn mic" id="mic">🎤 ポケット</button>
+      <button class="btn mic" id="micbop">🎤 出血</button>
       <button class="btn" id="prt">印刷</button>
       <button class="btn primary" id="done">完了</button>
     </header>
@@ -678,12 +757,20 @@ async function openEditor(examId) {
   difbtn.hidden = !ed.prev;
   difbtn.onclick = () => { ed.showDiff = !ed.showDiff; refresh(); };
   const leave = async () => { voiceStop(true); await flushSave(); showPatient(patient.id); };
-  if ($('#mic')) { $('#mic').onclick = () => voiceToggle('ppd'); $('#micbop').onclick = () => voiceToggle('bop'); } // 基本検査は音声入力なし（今は精密検査だけ）
+  $('#mic').onclick = () => voiceToggle('ppd');
+  $('#micbop').onclick = () => voiceToggle('bop');
   $('#back').onclick = leave;
   $('#done').onclick = async () => { await flushSave(); if (await finishCheck(exam)) leave(); };
   $('#prt').onclick = async () => { await flushSave(); await printExam(patient, exam); };
   $('#exdate').onchange = (e) => { if (e.target.value) { exam.date = e.target.value; touch(false); } };
   $('#exby').oninput = (e) => { exam.examiner = e.target.value.trim(); touch(false); };
+  $('#exby').onchange = () => { // 登録した検査者なら、その人の順番に並べ直す（今の部位はそのまま）
+    const c = ed.seq[ed.cur];
+    ed.seq = seqForExam(exam);
+    const i = ed.seq.findIndex((x) => x.t === c.t && x.k === c.k);
+    ed.cur = i >= 0 ? i : 0; voice.endedSite = null;
+    refresh();
+  };
   $('#chart').onclick = onChartTap;
   $('#pad').onclick = onPadTap;
   refresh();
@@ -850,6 +937,10 @@ function areaMapHTML(ctx) {
     const lab = side === 'b' ? '頬側' : q <= 2 ? '口蓋側' : '舌側';
     return `<button class="area${on ? ' on' : ''}" data-area="${q}${side}">${QNAME[q]} ${lab}</button>`;
   };
+  if (isBasic(ed.exam)) {
+    const qb = (q) => `<button class="area${ctx.q === q ? ' on' : ''}" data-area="${q}${ctx.side}">${QNAME[q]}</button>`;
+    return `<div class="areamap"><div class="ablock"><div class="ajaw">上顎</div><div class="agrid">${qb(1)}${qb(2)}</div></div><div class="ablock"><div class="ajaw">下顎</div><div class="agrid">${qb(4)}${qb(3)}</div></div></div>`;
+  }
   return `<div class="areamap">
     <div class="ablock"><div class="ajaw">上顎</div><div class="agrid">${cell(1, 'b')}${cell(2, 'b')}${cell(1, 'l')}${cell(2, 'l')}</div></div>
     <div class="ablock"><div class="ajaw">下顎</div><div class="agrid">${cell(4, 'l')}${cell(3, 'l')}${cell(4, 'b')}${cell(3, 'b')}</div></div>
@@ -1528,9 +1619,11 @@ function failSpeech(w) {
   if (/取り消せる入力がありません/.test(w)) return '取り消せる入力がありません';
   return null;
 }
-const siteSpeech = (s) => `${toothName(s.t)}、${sideName(s.t, s.k[0])}、${POS[s.k[1]]}`;
+const siteSpeech = (s) => (s.k === 'x' ? toothName(s.t) : `${toothName(s.t)}、${sideName(s.t, s.k[0])}、${POS[s.k[1]]}`);
+const posText = (s) => (s.k === 'x' ? '' : POS[s.k[1]]); // 基本検査は部位なし
 const startText = () => (voice.mode === 'bop' ? `出血モード、${ctxLabel(voice.ctx)}から` : `ポケット、${siteSpeech(ed.seq[ed.cur])}から`);
-const areaName = (s) => `${QNAME[quad(s.t)]}${sideName(s.t, s.k[0])}`;
+const areaName = (s) => s.al || `${QNAME[quad(s.t)]}${sideName(s.t, s.k[0])}`; // 区間の名前（「右上頬側」。1歯ずつ・基本検査は「右上」）
+const areaOf = (s) => (s.a ?? areaName(s)); // 区間（音声の区切り・案内の単位）
 const flagWord = (o, T) => (o.field === 'pus' ? '排膿' : T[o.t].bop[o.k] ? '出血' : '出血なし');
 // 話している最中の合図（ポケット）：仮入力でエリアの区切りを越えたらチャイム、次の歯に移ったら「ポッ」。
 // iPadは続けて話した数字を1つの文にまとめ、話し終えるまで確定しないため、言葉ではない音で知らせる（音なら聞き取りを止めずに鳴らせる）
@@ -1540,7 +1633,7 @@ function ppdCue() {
   voice.cue = to;
   if (to <= from || voice.jumped) return null; // 歯や部位を指定して動いたときは鳴らさない
   const a = ed.seq[from], b = ed.seq[to];
-  if (areaName(a) !== areaName(b)) { if (guideOn('boundary')) playTone('chime'); return 'area'; }
+  if (areaOf(a) !== areaOf(b)) { if (guideOn('boundary')) playTone('chime'); return 'area'; }
   if (a.t !== b.t && guideOn('tooth')) playTone('pop');
   return null;
 }
@@ -1608,10 +1701,11 @@ function ppdGuide(cur0, cur1, ops, done, complete0, complete1, moved, jumped) {
   if (jumped) return finish(); // 「右上6 口蓋側 近心 5」のように場所を指定して入れたときは、道案内しない
   // チャイム・「ポッ」は話している最中に ppdCue で鳴らし済み。ここでは今の位置を一言だけ（歯の途中なら部位も）
   const p = ed.seq[cur1 - 1];
-  const at = `${b.t % 10}番${p && p.t === b.t && p.k[0] === b.k[0] ? ` ${POS[b.k[1]]}` : ''}`;
-  if (areaName(a) !== areaName(b)) {
+  // 歯の途中なら部位も（1歯ずつの順番で反対側に移ったときは側も）
+  const at = `${b.t % 10}番${p && p.t === b.t ? (p.k[0] === b.k[0] ? ` ${POS[b.k[1]]}` : ` ${sideName(b.t, b.k[0])} ${POS[b.k[1]]}`) : ''}`;
+  if (areaOf(a) !== areaOf(b)) {
     const gone = []; // 新しいエリアの先頭で飛ばした欠損歯
-    for (let j = cur1 - 1; j > cur0 && T[ed.seq[j].t].missing && areaName(ed.seq[j]) === areaName(b); j--) {
+    for (let j = cur1 - 1; j > cur0 && T[ed.seq[j].t].missing && areaOf(ed.seq[j]) === areaOf(b); j--) {
       const t = ed.seq[j].t;
       if (t % 10 !== 8 && !gone.includes(t)) gone.unshift(t);
     }
@@ -1646,7 +1740,7 @@ function bopGuide(ctx0, ctx1, ops, done) {
     for (const o of ops) {
       let g = byTooth.find((x) => x.t === o.t);
       if (!g) { g = { t: o.t, words: [] }; byTooth.push(g); }
-      const w = o.field === 'bop' && T[o.t].bop[o.k] ? POS[o.k[1]] : `${POS[o.k[1]]} ${flagWord(o, T)}`;
+      const w = o.k === 'x' ? flagWord(o, T) : o.field === 'bop' && T[o.t].bop[o.k] ? POS[o.k[1]] : `${POS[o.k[1]]} ${flagWord(o, T)}`;
       if (!g.words.includes(w)) g.words.push(w);
     }
     items.push({ text: byTooth.map((g) => `${g.t % 10}番 ${g.words.join(' ')}`).join('、') });
@@ -1673,7 +1767,7 @@ function renderVoice() {
     : '<span class="vstate live"><i></i>どうぞ</span>';
   const c = ed.seq && ed.seq[ed.cur];
   const where = voice.on && voice.mode !== 'bop' && c && ed.exam
-    ? `<span class="vwhere"><small>次</small>${voice.endedSite ? '全部位 入力済み' : `${toothName(c.t)}<b>${sideName(c.t, c.k[0])} ${POS[c.k[1]]}</b>`}</span>` : '';
+    ? `<span class="vwhere"><small>次</small>${voice.endedSite ? '全部位 入力済み' : `${toothName(c.t)}<b>${c.k === 'x' ? 'ポケット' : `${sideName(c.t, c.k[0])} ${POS[c.k[1]]}`}</b>`}</span>` : '';
   v.innerHTML = `<div class="vrow">${state}${where}${voice.on && voice.mode === 'bop' && voice.ctx ? `<span class="vctx">出血入力中：${ctxLabel(voice.ctx)}</span>` : ''}${voice.warn ? `<span class="vwarn">⚠ ${esc(voice.warn)}</span>` : ''}<span class="vm">${voice.msg}</span>${voice.interim ? `<span class="vi">${esc(voice.interim)}…</span>` : ''}
     <button class="tool undo vlogbtn" id="vhelp">？ 話し方</button><button class="tool undo" id="vmute">${voice.muted ? '🔇 案内オフ' : '🔈 案内'}</button><button class="tool undo" id="vlog">聞き取りの記録</button><button class="tool undo" id="vtest">読み上げテスト</button></div>
 `;
@@ -1813,7 +1907,7 @@ function looksLikeNumbers(raw) {
   const h = toHira(raw.normalize('NFKC')).replace(/[\s、。,.!?！？]/g, '');
   return h.length >= 2 && /^[さんよいにごろくなはちきゅうしぜみーおう]+$/.test(h);
 }
-const shortSite = (s) => `${toothName(s.t)}${sideName(s.t, s.k[0])[0]}${POS[s.k[1]][0]}`;
+const shortSite = (s) => (s.k === 'x' ? toothName(s.t) : `${toothName(s.t)}${sideName(s.t, s.k[0])[0]}${POS[s.k[1]][0]}`);
 // 音声の取り消しは「最後の歯1本分」ずつ。エリアごとに確定するので、1回で1エリア分（21部位）が消えないように
 function popVoiceUndo() {
   voice.session = null; // 文の途中で取り消したら、あとでiPadが書き換えても入れ直さない（言い直しを頼む）
@@ -1841,12 +1935,12 @@ function undoVoiceOps(ops) {
 // provisional = 確定前の仮入力。取り消し・移動などの指示を含むときは仮入力しない
 // dry = 読み上げテスト用の試し実行（画面・保存・取り消し履歴には触らない）
 // 出血だけモード：数字は歯の番号。「右上 頬側」で列を決め、「7 遠心 近心」でその列の部位に出血を付ける
-const QNAME = { 1: '右上', 2: '左上', 3: '左下', 4: '右下' };
-const ctxLabel = (c) => `${QNAME[c.q]} ${c.side === 'b' ? '頬側' : c.q <= 2 ? '口蓋側' : '舌側'}`;
+const ctxLabel = (c) => (isBasic(ed.exam) ? QNAME[c.q] : `${QNAME[c.q]} ${c.side === 'b' ? '頬側' : c.q <= 2 ? '口蓋側' : '舌側'}`);
 function handleBopSpeech(raw, provisional, dry) {
   const toks = tokenizeSpeech(raw);
   if (provisional && (!toks.length || toks.some((t) => ['undo', 'stop'].includes(t.type)))) return null;
   const T = ed.exam.teeth, ctx = voice.ctx;
+  const basic = isBasic(ed.exam); // 基本検査：歯の番号を言えば、その歯に出血（部位の言葉はいらない）
   const ctx0 = { ...ctx };
   const ops = [], done = [];
   let teeth = [], posSeen = false, last = [], sawNum = false, sawTooth = false;
@@ -1878,6 +1972,11 @@ function handleBopSpeech(raw, provisional, dry) {
     sawTooth = true;
     if (T[t].missing) { done.push(`${toothName(t)}は欠損です`); return; }
     teeth = [t];
+    if (basic) { // 歯の番号だけで出血を付ける
+      set(t, 'x', 'bop', true);
+      last = [{ t, k: 'x' }]; voice.bopLast = last; voice.bopTooth = t; posSeen = true;
+      done.push(`${toothName(t)} 出血`);
+    }
   };
   let undone = null;
   const undoLast = () => {
@@ -1890,6 +1989,7 @@ function handleBopSpeech(raw, provisional, dry) {
   for (const tk of toks) {
     if (tk.type === 'quad') { dropPending(); ctx.q = tk.q; voice.bopTooth = null; done.push(`${ctxLabel(ctx)} へ`); }
     else if (tk.type === 'side') {
+      if (basic) continue;
       dropPending(); ctx.side = tk.side; voice.bopTooth = null;
       if (done.length && done[done.length - 1].endsWith(' へ')) done.pop();
       done.push(`${ctxLabel(ctx)} へ`);
@@ -1900,8 +2000,8 @@ function handleBopSpeech(raw, provisional, dry) {
         if (d < 1 || d > 8) { dropPending(); done.push(`${d}番の歯はありません`); continue; }
         addTooth(ctx.q * 10 + d);
       }
-    } else if (tk.type === 'pos') apply([tk.pos]);
-    else if (tk.type === 'all') apply(['d', 'c', 'm']);
+    } else if (tk.type === 'pos') { if (!basic) apply([tk.pos]); }
+    else if (tk.type === 'all') { if (!basic) apply(['d', 'c', 'm']); }
     else if (tk.type === 'flag' && (last.length || (voice.bopLast && voice.bopLast.length)) && (tk.val === false || tk.field === 'pus')) {
       if (!last.length) last = voice.bopLast;
       // 直前に付けた部位の出血を外す（マイナス）／出血の代わりに排膿にする（排膿）
@@ -1979,6 +2079,7 @@ function handleSpeech(raw, provisional = false, dry = false) {
   if (provisional && (!toks.length || toks.some((t) => ['undo', 'prev', 'next', 'stop'].includes(t.type)))) return null;
   if (!dry && ed.mode !== 'ppd') ed.mode = 'ppd';
   const T = ed.exam.teeth;
+  const basic = isBasic(ed.exam); // 基本検査：1歯1点。「右上6 5」で、その歯に入れる（近心・遠心などの言葉は使わない）
   const cur0 = ed.cur, complete0 = dry ? false : ppdComplete();
   const ops = [], done = [];
   let target = null;
@@ -2028,14 +2129,14 @@ function handleSpeech(raw, provisional = false, dry = false) {
     }
     if (tk.type === 'tooth') { moveToTarget(); blocked = false; target = { t: tk.t, side: null, pos: null, named: true }; }
     else if (tk.type === 'badtooth' || tk.type === 'quad') { target = null; blocked = true; done.push('歯の名前が聞き取れませんでした（上下か番号が抜けています）。入力していません'); }
-    else if (tk.type === 'side') { if (blocked) continue; target ||= specTarget() || { t: cur().t, side: null, pos: null }; target.side = tk.side; target.named = true; }
-    else if (tk.type === 'pos') { if (blocked) continue; target ||= specTarget() || { t: cur().t, side: cur().k[0], pos: null }; target.pos = tk.pos; }
+    else if (tk.type === 'side') { if (blocked || basic) continue; target ||= specTarget() || { t: cur().t, side: null, pos: null }; target.side = tk.side; target.named = true; }
+    else if (tk.type === 'pos') { if (blocked || basic) continue; target ||= specTarget() || { t: cur().t, side: cur().k[0], pos: null }; target.pos = tk.pos; }
     else if (tk.type === 'junk') {
       if (blocked || !toks.slice(toks.indexOf(tk) + 1).some((t) => t.type === 'num')) continue;
       target = null; blocked = true;
       if (provisional) voice.junkCut = true;
       const s = cur();
-      done.push(`聞き取れない言葉がありました。${toothName(s.t)} ${POS[s.k[1]]}から入力していません`);
+      done.push(`聞き取れない言葉がありました。${toothName(s.t)} ${posText(s)}から入力していません`);
     } else if (tk.type === 'num') {
       if (!hasTooth && firstSiteWord > toks.indexOf(tk)) {
         target = null; blocked = true;
@@ -2043,13 +2144,13 @@ function handleSpeech(raw, provisional = false, dry = false) {
         continue;
       }
       // 「右下4 頬側 8」のように、部位（近心・遠心・中央）が抜けて数字が1つだけのときは、聞き落としの可能性が高いので入れない
-      if (target && !target.pos && target.named && tk.vals.length === 1 && toks.indexOf(tk) === lastNum) {
+      if (!basic && target && !target.pos && target.named && tk.vals.length === 1 && toks.indexOf(tk) === lastNum) {
         target = null; blocked = true;
         done.push('近心・遠心・中央が聞き取れませんでした。入力していません');
         continue;
       }
       // 「5番 中央 4」「右上6 口蓋側 近心 5」のように1か所だけ言い直したときは、入れたあとカーソルを元の場所に戻す
-      const back = target && target.pos && tk.vals.length === 1 ? { cur: ed.cur, ended: voice.endedSite } : null;
+      const back = target && (target.pos || (basic && target.named)) && tk.vals.length === 1 ? { cur: ed.cur, ended: voice.endedSite } : null;
       moveToTarget();
       if (blocked) continue;
       if (back) {
@@ -2057,7 +2158,7 @@ function handleSpeech(raw, provisional = false, dry = false) {
         setField(s, 'ppd', tk.vals[0]);
         voice.lastSite = s;
         done.push(`${shortSite(s)} ${tk.vals[0]}`);
-        fixes.push(`${toothName(s.t)} ${s.k[0] !== ed.seq[back.cur].k[0] ? `${sideName(s.t, s.k[0])} ` : ''}${POS[s.k[1]]} ${tk.vals[0]}`); // 今と違う側なら側も言う
+        fixes.push(basic ? `${toothName(s.t)} ${tk.vals[0]}` : `${toothName(s.t)} ${s.k[0] !== ed.seq[back.cur].k[0] ? `${sideName(s.t, s.k[0])} ` : ''}${POS[s.k[1]]} ${tk.vals[0]}`); // 今と違う側なら側も言う
         ed.cur = back.cur; voice.endedSite = back.ended;
         specDone(s);
         continue;
@@ -2076,12 +2177,12 @@ function handleSpeech(raw, provisional = false, dry = false) {
     } else if (tk.type === 'flag') {
       let s;
       let spec = false;
-      if (target && target.pos) { const i = resolve(target); target = null; if (i < 0) { blocked = true; continue; } s = ed.seq[i]; spec = true; }
+      if (target && (target.pos || (basic && target.named))) { const i = resolve(target); target = null; if (i < 0) { blocked = true; continue; } s = ed.seq[i]; spec = true; }
       else { moveToTarget(); if (blocked) continue; s = voice.lastSite || cur(); }
       setField(s, tk.field, tk.val);
       voice.lastSite = s;
       done.push(`${shortSite(s)} ${tk.label}`);
-      if (spec) { fixes.push(`${toothName(s.t)} ${POS[s.k[1]]} ${tk.field === 'pus' ? '排膿' : tk.val ? '出血' : '出血なし'}`); specDone(s); }
+      if (spec) { fixes.push(`${toothName(s.t)} ${posText(s)} ${tk.field === 'pus' ? '排膿' : tk.val ? '出血' : '出血なし'}`); specDone(s); }
     } else if (tk.type === 'undo') undoLast();
     else if (tk.type === 'prev') { moveToTarget(); ed.cur = stepPPD(-1); voice.endedSite = null; moved = true; }
     else if (tk.type === 'next') { moveToTarget(); ed.cur = stepPPD(1); moved = true; }
@@ -2106,7 +2207,7 @@ function handleSpeech(raw, provisional = false, dry = false) {
   if (fixes.length && guideOn('enabled')) voice.lastGuide.unshift({ text: fixes.join('、') });
   if (undone && !ops.length && guideOn('enabled')) { // 取り消したら、どこから言い直すかを伝える
     const c = cur();
-    voice.lastGuide = [{ text: `取り消しました。${c.t % 10}番 ${POS[c.k[1]]}から` }];
+    voice.lastGuide = [{ text: `取り消しました。${c.t % 10}番 ${posText(c)}から` }];
   }
 
   if (ops.length) {
@@ -2150,7 +2251,7 @@ document.addEventListener('keydown', (e) => {
     touch();
     voiceMsg(`${toothName(last[0].t)}の分を取り消しました`);
     const c = ed.seq[ed.cur];
-    if (guideOn('enabled')) guide([{ text: voice.mode === 'bop' ? `${last[0].t % 10}番、取り消しました` : `取り消しました。${c.t % 10}番 ${POS[c.k[1]]}から` }]); // 取り消しの知らせは、復唱をオフにしても残す
+    if (guideOn('enabled')) guide([{ text: voice.mode === 'bop' ? `${last[0].t % 10}番、取り消しました` : `取り消しました。${c.t % 10}番 ${posText(c)}から` }]); // 取り消しの知らせは、復唱をオフにしても残す
   }
 });
 
@@ -2160,7 +2261,7 @@ const vt = { on: false, rec: null, item: null, log: [], onlyNG: false, interim: 
 const VT_MAX = 500;
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 function makeTestItem() {
-  const seq = buildSeq(settings.order);
+  const seq = buildSeq(defaultSpec());
   if (Math.random() < 0.7) {
     const t = pick(ALL);
     const [side, sname] = pick([['b', '頬側'], ['l', sideName(t, 'l')]]);
@@ -2183,7 +2284,7 @@ function makeTestItem() {
 function dryRunSpeech(raw, startIdx) {
   const exam = newExam(null, today(), '', null);
   const save = { exam: ed.exam, seq: ed.seq, cur: ed.cur, lastSite: voice.lastSite, endedSite: voice.endedSite, hist: voice.hist, spec: voice.specTooth, bopT: voice.bopTooth, bopL: voice.bopLast };
-  ed.exam = exam; ed.seq = buildSeq(settings.order); ed.cur = startIdx;
+  ed.exam = exam; ed.seq = buildSeq(defaultSpec()); ed.cur = startIdx;
   voice.lastSite = null; voice.endedSite = null; voice.hist = []; voice.specTooth = null; voice.bopTooth = null; voice.bopLast = null;
   try { return { ...handleSpeech(raw, false, true), exam }; } finally {
     ed.exam = save.exam; ed.seq = save.seq; ed.cur = save.cur;
@@ -2467,6 +2568,113 @@ function bindGuideSettings() {
   $('#gtest').onclick = () => { unlockAudio(); guide([{ tone: 'chime', text: '左上、頬側' }, { tone: 'buzz', text: '6番、部位をもう一度' }]); };
 }
 
+/* ================= 測る順番の設定 ================= */
+// id：'default'＝いつもの順番、'new'＝人を追加、ほか＝登録した人
+function orderDialog(id) {
+  const person = id === 'default' ? null : id === 'new' ? { id: uid(), name: '', order: null, basicOrder: null, isNew: true } : settings.examiners.find((e) => e.id === id);
+  const clone = (x) => (x ? JSON.parse(JSON.stringify(x)) : null);
+  const w = person
+    ? { name: person.name, useDefault: !person.order, spec: clone(person.order) || clone(defaultSpec()), basic: clone(person.basicOrder) }
+    : { spec: clone(defaultSpec()), basic: clone(settings.basicOrder) };
+  openDialog(`<div class="dlg-body ord"><h2>${person ? (person.isNew ? '検査する人を追加' : `${esc(person.name)} の順番`) : 'いつもの順番'}</h2>
+    ${person ? `<label class="field"><span>名前</span><input id="oname" value="${esc(w.name)}" placeholder="例：〇〇先生" autocomplete="off"></label>` : ''}
+    <div id="oedit"></div>
+    <div class="dlg-actions"><button class="btn" data-close>キャンセル</button><div class="grow"></div><button class="btn primary" id="osave">保存</button></div></div>`, true);
+  const draw = () => {
+    const sp = w.spec, custom = sp.preset === 'custom';
+    const blocks = orderBlocks(sp), prob = custom ? orderProblems(blocks) : { miss: [], dup: [] };
+    const sel = (cls, i, opts, v) => `<select class="${cls}" data-i="${i}">${opts.map(([k, l]) => `<option value="${k}" ${String(v) === String(k) ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
+    const QOPT = [[1, '右上'], [2, '左上'], [3, '左下'], [4, '右下']], DOPT = [['in', '8→1'], ['out', '1→8']];
+    const precise = (person && w.useDefault) ? `<p class="sub">いつもの順番（${esc(orderSummary(defaultSpec()))}）で入力します。</p>` : `
+      <div class="oopts">${[...Object.entries(ORDER_PRESETS), ['custom', { label: '自分で作る', desc: '区間を好きな順に並べる' }]].map(([k, o]) => `<label class="kindopt"><input type="radio" name="opre" value="${k}" ${sp.preset === k ? 'checked' : ''}><span><b>${o.label}</b><small>${o.desc}</small></span></label>`).join('')}</div>
+      ${!custom ? `<div class="orow">${sp.preset === 'tooth' ? `<span class="olab">先に測る側</span>${['b', 'l'].map((v) => `<label class="mini"><input type="radio" name="ofirst" value="${v}" ${(sp.first || 'b') === v ? 'checked' : ''}> ${v === 'b' ? '頬側' : '舌側（口蓋側）'}</label>`).join('')}` : ''}
+        <span class="olab">始める所</span>${['R', 'L'].map((v) => `<label class="mini"><input type="radio" name="ostart" value="${v}" ${(sp.start || 'R') === v ? 'checked' : ''}> ${v === 'R' ? '右上8から' : '左上8から'}</label>`).join('')}</div>`
+      : `<div class="oblocks">${blocks.map((b, i) => `<div class="oblock"><b>${i + 1}</b>${sel('obq', i, QOPT, b.q)}${sel('obs', i, Object.entries(SIDE_LABEL), b.side)}${sel('obd', i, DOPT, b.dir)}
+          <label class="mini"><input type="checkbox" class="obf" data-i="${i}" ${b.flip ? 'checked' : ''}> 1歯の中を逆に</label>
+          <button class="tool" data-mv="${i}" data-d="-1" ${i ? '' : 'disabled'}>↑</button><button class="tool" data-mv="${i}" data-d="1" ${i < blocks.length - 1 ? '' : 'disabled'}>↓</button><button class="tool" data-rm="${i}">✕</button></div>`).join('')}
+        <button class="btn" id="obadd">＋ 区間を追加</button>
+        ${prob.miss.length || prob.dup.length ? `<p class="owarn">${prob.miss.length ? `入っていない所：${prob.miss.join('・')}　` : ''}${prob.dup.length ? `重なっている所：${prob.dup.join('・')}` : ''}</p>` : '<p class="ook">✓ 全部の部位が1回ずつ入っています</p>'}</div>`}
+      ${orderPreviewHTML(blocks)}`;
+    const bs = w.basic && w.basic.preset === 'custom' ? w.basic : null;
+    const bq = bs ? [1, 2, 3, 4].filter((q) => bs.blocks.filter((b) => b.q === q).length !== 1).map((q) => QNAME[q]) : [];
+    const basicSeqNow = basicSeqFrom(w.basic, person && w.useDefault ? defaultSpec() : w.spec);
+    $('#oedit').innerHTML = `
+      <h3 class="exh">精密検査（6点）</h3>
+      ${person ? `<label class="check"><input type="checkbox" id="ouse" ${w.useDefault ? 'checked' : ''}><span>いつもの順番を使う</span></label>` : ''}
+      ${precise}
+      <h3 class="exh">基本検査（1歯1点）</h3>
+      <div class="orow">${[['same', '精密検査と同じ流れ'], ['custom', '自分で作る']].map(([v, l]) => `<label class="mini"><input type="radio" name="obasic" value="${v}" ${(bs ? 'custom' : 'same') === v ? 'checked' : ''}> ${l}</label>`).join('')}</div>
+      ${bs ? `<div class="oblocks">${bs.blocks.map((b, i) => `<div class="oblock"><b>${i + 1}</b>${sel('bbq', i, QOPT, b.q)}${sel('bbd', i, DOPT, b.dir)}
+          <button class="tool" data-bmv="${i}" data-d="-1" ${i ? '' : 'disabled'}>↑</button><button class="tool" data-bmv="${i}" data-d="1" ${i < bs.blocks.length - 1 ? '' : 'disabled'}>↓</button><button class="tool" data-brm="${i}">✕</button></div>`).join('')}
+        <button class="btn" id="bbadd">＋ ブロックを追加</button>
+        ${bq.length ? `<p class="owarn">右上・左上・左下・右下を1回ずつにしてください（${bq.join('・')}）</p>` : ''}</div>` : ''}
+      <p class="ofirst">歯の順：${basicSeqNow.slice(0, 32).map((x) => toothName(x.t)).join(' → ')}</p>`;
+    bind();
+  };
+  const blocksNow = () => orderBlocks(w.spec);
+  const toCustom = () => { if (w.spec.preset !== 'custom') w.spec = { preset: 'custom', blocks: blocksNow() }; };
+  const bind = () => {
+    const d = $('#oedit');
+    const on = (sel, ev, fn) => d.querySelectorAll(sel).forEach((el) => (el[ev] = () => { fn(el); draw(); }));
+    on('#ouse', 'onchange', (el) => { w.useDefault = el.checked; });
+    on('input[name=opre]', 'onchange', (el) => {
+      if (el.value === 'custom') toCustom(); else w.spec = { preset: el.value, start: w.spec.start || 'R', first: w.spec.first || 'b' };
+    });
+    on('input[name=ofirst]', 'onchange', (el) => { w.spec.first = el.value; });
+    on('input[name=ostart]', 'onchange', (el) => { w.spec.start = el.value; });
+    const B = () => w.spec.blocks;
+    on('.obq', 'onchange', (el) => { B()[el.dataset.i].q = Number(el.value); });
+    on('.obs', 'onchange', (el) => { B()[el.dataset.i].side = el.value; });
+    on('.obd', 'onchange', (el) => { B()[el.dataset.i].dir = el.value; });
+    on('.obf', 'onchange', (el) => { B()[el.dataset.i].flip = el.checked; });
+    on('[data-mv]', 'onclick', (el) => { const i = Number(el.dataset.mv), j = i + Number(el.dataset.d); [B()[i], B()[j]] = [B()[j], B()[i]]; });
+    on('[data-rm]', 'onclick', (el) => { B().splice(Number(el.dataset.rm), 1); });
+    on('#obadd', 'onclick', () => { const l = B()[B().length - 1]; B().push({ q: l ? l.q : 1, side: l ? (l.side === 'b' ? 'l' : 'b') : 'b', dir: l ? (l.dir === 'in' ? 'out' : 'in') : 'in', flip: false }); });
+    on('input[name=obasic]', 'onchange', (el) => { w.basic = el.value === 'custom' ? { preset: 'custom', blocks: [[1, 'in'], [2, 'out'], [3, 'in'], [4, 'out']].map(([q, dir]) => ({ q, dir })) } : null; });
+    const BB = () => w.basic.blocks;
+    on('.bbq', 'onchange', (el) => { BB()[el.dataset.i].q = Number(el.value); });
+    on('.bbd', 'onchange', (el) => { BB()[el.dataset.i].dir = el.value; });
+    on('[data-bmv]', 'onclick', (el) => { const i = Number(el.dataset.bmv), j = i + Number(el.dataset.d); [BB()[i], BB()[j]] = [BB()[j], BB()[i]]; });
+    on('[data-brm]', 'onclick', (el) => { BB().splice(Number(el.dataset.brm), 1); });
+    on('#bbadd', 'onclick', () => { BB().push({ q: 1, dir: 'in' }); });
+  };
+  draw();
+  $('#osave').onclick = async () => {
+    const custom = w.spec.preset === 'custom' && !(person && w.useDefault);
+    if (custom) { const pr = orderProblems(orderBlocks(w.spec)); if (pr.miss.length || pr.dup.length) { $('.owarn').scrollIntoView({ block: 'center' }); return; } }
+    if (w.basic && [1, 2, 3, 4].some((q) => w.basic.blocks.filter((b) => b.q === q).length !== 1)) return;
+    if (person) {
+      const name = $('#oname').value.trim();
+      if (!name) { $('#oname').focus(); return; }
+      if ((settings.examiners || []).some((e) => e.id !== person.id && e.name === name)) { await notify(`「${name}」はもう登録されています。`); return orderDialog(id); }
+      const rec = { id: person.id, name, order: w.useDefault ? null : w.spec, basicOrder: w.basic };
+      settings.examiners = [...(settings.examiners || []).filter((e) => e.id !== person.id), rec];
+    } else {
+      settings.orderSpec = w.spec; settings.basicOrder = w.basic;
+      if (['z', 'loop'].includes(w.spec.preset) && w.spec.start !== 'L') settings.order = w.spec.preset; // 読み上げテストなどの古い設定も合わせる
+    }
+    await saveSettings();
+    closeDialog();
+    showSettings();
+  };
+}
+// 順番の見本：8つの区間（チャートと同じ並び）に、何番目にどちら向きに測るか
+function orderPreviewHTML(blocks) {
+  const cell = (q, side) => {
+    const hits = blocks.map((b, i) => ({ b, i })).filter(({ b }) => b.q === q && (b.side === side || b.side.length === 2));
+    if (!hits.length) return '<td class="opv none">—</td>';
+    return `<td class="opv">${hits.map(({ b, i }) => {
+      const right = (q === 1 || q === 4) === (b.dir === 'in'); // 画面で右へ進むか
+      return `<span><b>${i + 1}</b>${right ? '→' : '←'}${b.side.length === 2 ? `<small>${b.side === 'bl' ? '頬→舌' : '舌→頬'}</small>` : ''}</span>`;
+    }).join('')}</td>`;
+  };
+  const first = seqFromBlocks(blocks).slice(0, 9).map((x) => `${toothName(x.t)}${sideName(x.t, x.k[0])[0]}${POS[x.k[1]][0]}`);
+  return `<table class="opview"><tr><th>上 頬側</th>${cell(1, 'b')}${cell(2, 'b')}</tr><tr><th>上 口蓋側</th>${cell(1, 'l')}${cell(2, 'l')}</tr>
+    <tr class="osep"><th>下 舌側</th>${cell(4, 'l')}${cell(3, 'l')}</tr><tr><th>下 頬側</th>${cell(4, 'b')}${cell(3, 'b')}</tr>
+    <tr class="ocap"><th></th><td>右（患者の右）</td><td>左</td></tr></table>
+    <p class="ofirst">最初の9か所：${first.join(' → ')} …</p>`;
+}
+
 /* ================= 設定・バックアップ ================= */
 // 開いた画面を覚えておき、「戻る」でそこへ帰る（入力画面なら音声を止めて保存してから）
 let settingsFrom = null;
@@ -2494,9 +2702,16 @@ async function showSettings() {
     <header class="bar"><button class="btn ghost" id="setback">‹ ${settingsFrom ? SETTINGS_BACK[settingsFrom.name] : '患者一覧'}</button><h1>設定・バックアップ</h1><div class="grow"></div></header>
     <main class="wrap stack">
       <section class="card"><h2>医院名（印刷に表示されます）</h2><input id="clinic" class="text" value="${esc(settings.clinicName)}" placeholder="例：〇〇歯科医院" autocomplete="off"></section>
-      <section class="card"><h2>ポケット測定の順番</h2>
-        ${Object.entries(ORDERS).map(([k, o]) => `<label class="radio"><input type="radio" name="order" value="${k}" ${settings.order === k ? 'checked' : ''}>
-          <span><b>${o.label}</b><small>${o.desc}</small></span></label>`).join('')}</section>
+      <section class="card"><h2>ポケットを測る順番</h2>
+        <p class="sub">新しい検査で検査者を選ぶと、その人の順番で入力できます（音声入力も同じ順番）。登録していない人は「いつもの順番」です。</p>
+        <div class="exrow"><div class="exname">いつもの順番</div><div class="exord"><span>精密：${esc(orderSummary(defaultSpec()))}</span><span>基本：${esc(basicSummary(settings.basicOrder))}</span></div>
+          <button class="btn" data-ord="default">変える</button></div>
+        <h3 class="exh">検査する人（ドクター・衛生士）</h3>
+        ${(settings.examiners || []).map((x) => `<div class="exrow"><div class="exname">${esc(x.name)}</div>
+          <div class="exord"><span>精密：${x.order ? esc(orderSummary(x.order)) : 'いつもの順番'}</span><span>基本：${x.order || x.basicOrder ? esc(basicSummary(x.basicOrder)) : 'いつもの順番'}</span></div>
+          <button class="btn" data-ord="${x.id}">変える</button><button class="btn danger" data-exdel="${x.id}">削除</button></div>`).join('') || '<p class="sub">まだ登録していません。</p>'}
+        <button class="btn" data-ord="new">＋ 人を追加</button>
+        <p class="hint">名前と順番は、このiPadの中にだけ保存します（バックアップには入ります）。</p></section>
       <section class="card"><h2>バックアップ</h2>
         <p>データはこのiPadの中だけに保存されています。故障・紛失に備えて、定期的に書き出して院内PCに保存してください。</p>
         <p class="sub">最終バックアップ：${settings.lastBackupAt ? new Date(settings.lastBackupAt).toLocaleString('ja-JP') : 'まだありません'}</p>
@@ -2516,7 +2731,14 @@ async function showSettings() {
     </main>`;
   $('#setback').onclick = leaveSettings;
   $('#clinic').onchange = (e) => { settings.clinicName = e.target.value.trim(); saveSettings(); };
-  document.querySelectorAll('input[name=order]').forEach((r) => (r.onchange = () => { settings.order = r.value; saveSettings(); }));
+  document.querySelectorAll('[data-ord]').forEach((b) => (b.onclick = () => orderDialog(b.dataset.ord)));
+  document.querySelectorAll('[data-exdel]').forEach((b) => (b.onclick = async () => {
+    const x = settings.examiners.find((e) => e.id === b.dataset.exdel);
+    if (!(await askConfirm(`「${x.name}」を検査者の一覧から消しますか？\n（これまでの検査の記録はそのまま残ります）`, '消す', true))) return showSettings();
+    settings.examiners = settings.examiners.filter((e) => e !== x);
+    await saveSettings();
+    showSettings();
+  }));
   $('#imp').onchange = (e) => { const f = e.target.files[0]; if (f) importBackup(f); e.target.value = ''; };
   $('#vtOpen').onclick = showVoiceTest;
   const passSt = (p) => ($('#aipassst').textContent = p ? '合言葉は入力済みです（このiPadの中だけに保存。バックアップには入りません）' : 'まだ入力されていません');
