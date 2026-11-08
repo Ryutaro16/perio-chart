@@ -748,7 +748,8 @@ async function openEditor(examId) {
       <button class="btn" id="prt">印刷</button>
       <button class="btn primary" id="done">完了</button>
     </header>
-    <div class="ed-main"><div id="stats" class="stats"></div><div id="chart"></div></div>
+    <div class="ed-main"><div id="stats" class="stats"></div>
+      <div class="chartbox"><div class="chartvp" id="chartvp"><div id="chart"></div></div><div class="zoomctl" id="zoomctl"></div></div></div>
     <div class="voicebar" id="voicebar" hidden></div>
     <div class="pad" id="pad"></div>
   </div>`;
@@ -774,7 +775,10 @@ async function openEditor(examId) {
   };
   $('#chart').onclick = onChartTap;
   $('#pad').onclick = onPadTap;
+  loadZoom(); zm.smooth = false;
+  setupChartZoom();
   refresh();
+  zm.smooth = true;
 }
 
 // 「完了」のときの入力漏れの確認。漏れがなければそのまま終える。項目を押すと、その入力に戻る
@@ -845,14 +849,125 @@ function refresh() {
   followCursor();
 }
 
-// チャートが画面に収まらないとき（iPhone）は、今の場所が見えるようにチャートを動かす
-function followCursor() {
-  const box = $('.ed-main'), c = box && box.querySelector('.chart td.cur, .chart td.ctxrow');
-  if (!c || box.scrollHeight <= box.clientHeight + 1) return;
-  const b = box.getBoundingClientRect(), r = c.getBoundingClientRect(), m = Math.min(40, box.clientHeight / 4);
-  if (r.top < b.top + m) box.scrollTop += r.top - b.top - m;
-  else if (r.bottom > b.bottom - m) box.scrollTop += r.bottom - b.bottom + m;
+/* ---------- チャートの拡大（画面全体は拡大しない。チャートの中だけ、ピンチとボタンで） ----------
+   拡大率は端末ごと・縦横ごとに覚える（localStorage）。「エリア」がオンなら、今のエリア（右上・左上…の半分）が幅いっぱいになる拡大率に合わせる */
+const ZOOM_MIN = 1, ZOOM_MAX = 4, ZOOM_STEPS = [1, 1.25, 1.5, 2, 2.5, 3, 4];
+const zm = { z: 1, area: false, key: '', smooth: true, touching: false };
+const isPhone = () => matchMedia('(max-width: 600px), (max-height: 500px) and (orientation: landscape)').matches;
+const zoomKey = () => (matchMedia('(orientation: landscape)').matches ? 'l' : 'p');
+function zoomStore() { try { return JSON.parse(localStorage.getItem('perio-zoom') || '{}') || {}; } catch { return {}; } }
+function loadZoom() {
+  zm.key = zoomKey();
+  const st = zoomStore()[zm.key] || {};
+  zm.z = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, +st.z || 1));
+  zm.area = st.area ?? isPhone(); // iPhoneは「エリア」を最初からオン
 }
+function saveZoom() {
+  try { const all = zoomStore(); all[zm.key] = { z: Math.round(zm.z * 100) / 100, area: zm.area }; localStorage.setItem('perio-zoom', JSON.stringify(all)); } catch { /* 保存できない端末 */ }
+}
+function layoutZoom() {
+  const vp = $('#chartvp'), ch = $('#chart');
+  if (!vp || !ch) return;
+  ch.style.width = vp.clientWidth + 'px'; // 等倍で幅ぴったり。zoom で全体（文字も）が大きくなる
+  ch.style.zoom = zm.z;
+}
+// 拡大率を変える。(cx, cy)（チャート枠の中の位置）にある所は、同じ位置に残す
+function setZoom(z, cx, cy) {
+  const vp = $('#chartvp');
+  if (!vp) return;
+  z = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
+  cx ??= vp.clientWidth / 2; cy ??= vp.clientHeight / 2;
+  const px = (vp.scrollLeft + cx) / zm.z, py = (vp.scrollTop + cy) / zm.z;
+  zm.z = z; layoutZoom();
+  vp.scrollLeft = px * z - cx; vp.scrollTop = py * z - cy;
+  renderZoomCtl();
+}
+function renderZoomCtl() {
+  const b = $('#zoomctl');
+  if (!b) return;
+  b.innerHTML = `<button data-z="all" class="${zm.z === 1 && !zm.area ? 'on' : ''}">全体</button><button data-z="area" class="${zm.area ? 'on' : ''}">エリア</button>
+    <button data-z="-" ${zm.z <= ZOOM_MIN ? 'disabled' : ''} aria-label="縮小">−</button><span class="zv">${Math.round(zm.z * 100)}%</span><button data-z="+" ${zm.z >= ZOOM_MAX ? 'disabled' : ''} aria-label="拡大">＋</button>`;
+}
+function setupChartZoom() {
+  const vp = $('#chartvp');
+  renderZoomCtl();
+  $('#zoomctl').onclick = (e) => {
+    const a = e.target.closest('[data-z]')?.dataset.z;
+    if (!a) return;
+    if (a === 'all') { zm.area = false; setZoom(1); }
+    else if (a === 'area') { zm.area = !zm.area; if (!zm.area) renderZoomCtl(); }
+    else {
+      zm.area = false;
+      const nz = a === '+' ? ZOOM_STEPS.find((v) => v > zm.z + 0.01) : [...ZOOM_STEPS].reverse().find((v) => v < zm.z - 0.01);
+      setZoom(nz ?? zm.z);
+    }
+    saveZoom(); followCursor();
+  };
+  let pinch = null;
+  const dist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  const mid = (t) => { const r = vp.getBoundingClientRect(); return [(t[0].clientX + t[1].clientX) / 2 - r.left, (t[0].clientY + t[1].clientY) / 2 - r.top]; };
+  vp.addEventListener('touchstart', (e) => {
+    zm.touching = true;
+    if (e.touches.length === 2) pinch = { d: dist(e.touches), z: zm.z };
+  }, { passive: true });
+  vp.addEventListener('touchmove', (e) => {
+    if (!pinch || e.touches.length !== 2) return;
+    e.preventDefault();
+    const [cx, cy] = mid(e.touches);
+    zm.area = false;
+    setZoom(pinch.z * dist(e.touches) / pinch.d, cx, cy);
+  }, { passive: false });
+  const end = (e) => {
+    if (pinch && e.touches.length < 2) { pinch = null; saveZoom(); }
+    if (!e.touches.length) zm.touching = false;
+  };
+  vp.addEventListener('touchend', end); vp.addEventListener('touchcancel', end);
+  // Macのトラックパッドのピンチ（ctrl＋ホイール）でも
+  vp.addEventListener('wheel', (e) => {
+    if (!e.ctrlKey) return;
+    e.preventDefault();
+    const r = vp.getBoundingClientRect();
+    zm.area = false;
+    setZoom(zm.z * Math.exp(-e.deltaY / 150), e.clientX - r.left, e.clientY - r.top);
+    clearTimeout(zm.saveT); zm.saveT = setTimeout(saveZoom, 400);
+  }, { passive: false });
+}
+// 今の場所（音声の出血モードは今の列）が真ん中に来るように、チャートを動かす。指で動かしている間は動かさない
+function followCursor(again) {
+  const vp = $('#chartvp'), ch = $('#chart');
+  if (!vp || !ch || view.name !== 'editor') return;
+  layoutZoom();
+  if (zm.touching) return;
+  const cells = [...ch.querySelectorAll('td.cur')];
+  if (!cells.length) cells.push(...ch.querySelectorAll('td.ctxrow'));
+  if (!cells.length) return;
+  const vr = vp.getBoundingClientRect();
+  const rs = cells.map((c) => c.getBoundingClientRect());
+  const L = Math.min(...rs.map((r) => r.left)), R = Math.max(...rs.map((r) => r.right)), T = Math.min(...rs.map((r) => r.top)), B = Math.max(...rs.map((r) => r.bottom));
+  const cx = (L + R) / 2 - vr.left + vp.scrollLeft, cy = (T + B) / 2 - vr.top + vp.scrollTop;
+  let left = cx - vp.clientWidth / 2;
+  if (zm.area) { // 今のエリア＝チャートの左半分か右半分。幅いっぱいに
+    const tb = ch.querySelector('table'), lab = ch.querySelector('th.lab');
+    if (tb) {
+      const tr = tb.getBoundingClientRect(), lw = lab ? lab.getBoundingClientRect().width : 0;
+      const half = (tr.width - lw) / 2, x0 = tr.left - vr.left + vp.scrollLeft + lw;
+      const fz = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, (vp.clientWidth - 8) / (half / zm.z)));
+      if (!again && Math.abs(fz - zm.z) > 0.01) { setZoom(fz); followCursor(true); return; }
+      left = x0 + (cx < x0 + half ? 0 : half) - 4;
+    }
+  }
+  vp.scrollTo({ left, top: cy - vp.clientHeight / 2, behavior: zm.smooth ? 'smooth' : 'auto' });
+}
+// 向きを変えたら、その向きの拡大率に
+window.addEventListener('resize', () => {
+  if (view.name !== 'editor' || !$('#chartvp')) return;
+  if (zoomKey() !== zm.key) { loadZoom(); renderZoomCtl(); }
+  const s = zm.smooth; zm.smooth = false; followCursor(); layoutZoom(); zm.smooth = s;
+});
+// 画面全体の拡大（ピンチ・ダブルタップ）を止める。チャートの中のピンチは上で自分で扱う
+document.addEventListener('gesturestart', (e) => e.preventDefault());
+document.addEventListener('gesturechange', (e) => e.preventDefault());
+document.addEventListener('touchmove', (e) => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
 
 function touch(redraw = true) {
   ed.exam.updatedAt = Date.now();

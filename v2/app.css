@@ -24,6 +24,7 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--ink); }
+html { touch-action: manipulation; } /* ダブルタップでの拡大を止める */
 body { -webkit-text-size-adjust: 100%; }
 button, input, select, textarea { font: inherit; color: inherit; }
 button { touch-action: manipulation; cursor: pointer; }
@@ -239,7 +240,17 @@ dialog::backdrop { background: rgba(15, 23, 42, .35); }
 .voicebar .vdot { width: 10px; height: 10px; border-radius: 50%; background: #dc2626; flex: none; animation: vblink 1.2s infinite; }
 @keyframes vblink { 50% { opacity: .25; } }
 .savest.busy { color: var(--sub); }
-.ed-main { flex: 1; overflow: auto; padding: 6px 10px 8px; }
+.ed-main { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 6px 10px 8px; }
+.ed-main .stats { flex: none; }
+/* チャートの枠：この中だけ拡大・縮小し、縦横に動かせる */
+.chartbox { flex: 1; min-height: 0; position: relative; }
+.chartvp { position: absolute; inset: 0; overflow: auto; -webkit-overflow-scrolling: touch; touch-action: pan-x pan-y; overscroll-behavior: contain; }
+.zoomctl { position: absolute; top: 4px; right: 4px; z-index: 3; display: flex; align-items: center; gap: 2px; padding: 2px; background: rgba(255, 255, 255, .92); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 2px 8px rgba(15, 23, 42, .12); }
+.zoomctl button { min-width: 34px; height: 30px; padding: 0 8px; border: 0; border-radius: 8px; background: transparent; font-size: 13px; font-weight: 700; color: var(--sub); }
+.zoomctl button[data-z="+"], .zoomctl button[data-z="-"] { font-size: 18px; color: var(--accent); }
+.zoomctl button.on { background: var(--accent); color: #fff; }
+.zoomctl button:disabled { opacity: .3; }
+.zoomctl .zv { min-width: 40px; text-align: center; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--ink); }
 .stats { display: flex; gap: 6px 18px; flex-wrap: wrap; font-size: 13px; color: var(--sub); padding: 2px 2px 6px; }
 .stats b { color: var(--ink); font-size: 16px; font-variant-numeric: tabular-nums; }
 
@@ -433,6 +444,10 @@ i.dif.dn { color: #2563eb; }
   .editor .bar .grow { display: none; }
   .editor .bar .brk ~ .btn { flex: 1; padding: 4px 4px; }
   .keys.n12 { grid-template-columns: repeat(6, 1fr); }
+  /* 縦は1部位の幅がとても狭いので、文字を小さめに（拡大すると、ちょうどよい大きさになる） */
+  .chart td.s { height: 22px; font-size: 9px; letter-spacing: 0; }
+  .chart td.num { font-size: 10px; }
+  .chart td.cur, .chart.voiceon td.cur, .voiceon .chart td.cur { box-shadow: inset 0 0 0 1.5px var(--cur); animation: none; }
   .areamap { gap: 6px; }
   .area { min-height: 28px; font-size: 13px; }
 }
