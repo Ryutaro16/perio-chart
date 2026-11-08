@@ -735,12 +735,13 @@ async function openEditor(examId) {
     <header class="bar">
       <button class="btn ghost" id="back">‹ ${esc(patient.name)} 様</button>
       ${isBasic(exam) ? '<span class="kindtag">基本検査</span>' : ''}
-      <label class="mini">検査日 <input type="date" id="exdate" value="${esc(exam.date)}"></label>
-      <label class="mini">検査者 <input id="exby" value="${esc(exam.examiner || '')}" autocomplete="off" list="exlist"></label>
+      <label class="mini"><span class="lt">検査日</span> <input type="date" id="exdate" value="${esc(exam.date)}"></label>
+      <label class="mini"><span class="lt">検査者</span> <input id="exby" value="${esc(exam.examiner || '')}" autocomplete="off" list="exlist" placeholder="検査者"></label>
       <datalist id="exlist">${(settings.examiners || []).map((x) => `<option value="${esc(x.name)}">`).join('')}</datalist>
       <div class="grow"></div>
       ${gearBtn(false)}
       <span id="savest" class="savest">保存済み</span>
+      <span class="brk"></span>
       <button class="btn" id="difbtn" hidden></button>
       <button class="btn mic" id="mic">🎤 ポケット</button>
       <button class="btn mic" id="micbop">🎤 出血</button>
@@ -841,6 +842,16 @@ function refresh() {
   $('#pad').innerHTML = padHTML();
   ed.flash = '';
   if (voice.on) renderVoice(); // 帯の「次」の場所を合わせる
+  followCursor();
+}
+
+// チャートが画面に収まらないとき（iPhone）は、今の場所が見えるようにチャートを動かす
+function followCursor() {
+  const box = $('.ed-main'), c = box && box.querySelector('.chart td.cur, .chart td.ctxrow');
+  if (!c || box.scrollHeight <= box.clientHeight + 1) return;
+  const b = box.getBoundingClientRect(), r = c.getBoundingClientRect(), m = Math.min(40, box.clientHeight / 4);
+  if (r.top < b.top + m) box.scrollTop += r.top - b.top - m;
+  else if (r.bottom > b.bottom - m) box.scrollTop += r.bottom - b.bottom + m;
 }
 
 function touch(redraw = true) {

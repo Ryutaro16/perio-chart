@@ -389,6 +389,66 @@ i.dif.dn { color: #2563eb; }
   .pcrsvg { width: 26px; height: 26px; }
   .keys.tools, .keys.tools7, .keys.n7 { grid-template-columns: repeat(4, 1fr); }
 }
+.editor .brk { display: none; }
+
+/* ---------- iPhone：縦（幅が狭い）と横（高さが低い）。チャートに場所をゆずるため、上と下を詰める ---------- */
+@media (max-width: 600px), (max-height: 500px) and (orientation: landscape) {
+  .editor .bar { gap: 6px; padding: 5px 8px; padding-top: max(5px, env(safe-area-inset-top)); padding-left: max(8px, env(safe-area-inset-left)); padding-right: max(8px, env(safe-area-inset-right)); }
+  .editor .bar .btn { min-height: 36px; padding: 4px 10px; font-size: 14px; }
+  .editor .bar .btn.ghost { padding-left: 2px; max-width: 34vw; overflow: hidden; text-overflow: ellipsis; }
+  .editor .bar .btn.gear { min-width: 36px; padding: 0 6px; }
+  .editor .bar .mini .lt, .editor .savest { display: none; }
+  .editor .bar .mini input { font-size: 14px; padding: 4px 6px; }
+  .editor .bar .mini input:not([type]) { width: 76px; }
+  .editor .bar .kindtag { font-size: 11px; padding: 1px 6px; }
+  .ed-main { padding: 2px 6px 4px; padding-left: max(6px, env(safe-area-inset-left)); padding-right: max(6px, env(safe-area-inset-right)); }
+  .stats { flex-wrap: nowrap; overflow-x: auto; white-space: nowrap; gap: 12px; font-size: 12px; padding: 2px 2px 4px; }
+  .stats b { font-size: 14px; }
+  .chart col.labc { width: 30px; }
+  .chart th.lab { font-size: 8px; padding-right: 2px; }
+  .chart td.s { height: 28px; font-size: 12px; letter-spacing: -1px; }
+  .chart td.num { height: 18px; font-size: 11px; }
+  .chart td.mob { height: 22px; font-size: 12px; }
+  .chart td.f { height: 18px; font-size: 11px; }
+  .chart td.pcr { height: 26px; }
+  .pcrsvg { width: 20px; height: 20px; }
+  .chart i.bop { width: 5px; height: 5px; top: 1px; right: 1px; }
+  .pad { padding: 5px 6px calc(5px + env(safe-area-inset-bottom)); padding-left: max(6px, env(safe-area-inset-left)); padding-right: max(6px, env(safe-area-inset-right)); }
+  .tabs { gap: 4px; margin-bottom: 4px; }
+  .tab { min-height: 34px; font-size: 14px; border-radius: 8px; }
+  .pad-status { font-size: 13px; margin: 0 2px 4px; gap: 8px; }
+  .pad-status strong { font-size: 15px; }
+  .pad-status .tip { display: none; }
+  .keys { gap: 5px; }
+  .key { height: 44px; font-size: 20px; }
+  .tool { min-height: 40px; font-size: 14px; }
+  .fillgrp .tool { min-height: 38px; }
+  .voicebar { padding: 4px 8px; font-size: 13px; min-height: 28px; }
+  .voicebar .vctx, .voicebar .vwhere { font-size: 16px; }
+  .voicebar .vwarn { font-size: 15px; }
+}
+/* 縦：上は2段（名前・日付・検査者・⚙ ／ 音声・印刷・完了）、数字は6個ずつ2段 */
+@media (max-width: 600px) {
+  .editor .brk { display: block; flex-basis: 100%; height: 0; }
+  .editor .bar .grow { display: none; }
+  .editor .bar .brk ~ .btn { flex: 1; padding: 4px 4px; }
+  .keys.n12 { grid-template-columns: repeat(6, 1fr); }
+  .areamap { gap: 6px; }
+  .area { min-height: 28px; font-size: 13px; }
+}
+/* 横：上は1段、数字は12個を1段。チャートは今の場所が見えるように自動で動く */
+@media (max-height: 500px) and (orientation: landscape) {
+  .stats { display: none; }
+  .key { height: 38px; font-size: 18px; }
+  .tool { min-height: 36px; }
+  .fillgrp .tool { min-height: 34px; }
+  .keys.tools { grid-template-columns: repeat(6, 1fr); }
+  .keys.tools7 { grid-template-columns: repeat(8, 1fr); }
+  .keys.n7 { grid-template-columns: repeat(7, 1fr); }
+  .tab { min-height: 30px; }
+  .areamap { gap: 6px; }
+  .area { min-height: 24px; font-size: 13px; }
+}
 
 /* ---------- 新しいバージョンのお知らせ（プログラム更新時に画面上部へ表示） ---------- */
 #update {
