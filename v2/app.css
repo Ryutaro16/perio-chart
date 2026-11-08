@@ -245,6 +245,8 @@ dialog::backdrop { background: rgba(15, 23, 42, .35); }
 /* チャートの枠：この中だけ拡大・縮小し、縦横に動かせる */
 .chartbox { flex: 1; min-height: 0; position: relative; }
 .chartvp { position: absolute; inset: 0; overflow: auto; -webkit-overflow-scrolling: touch; touch-action: pan-x pan-y; overscroll-behavior: contain; }
+.chartsz { position: relative; overflow: hidden; }
+.chartsz > #chart { position: relative; transform-origin: 0 0; }
 .zoomctl { position: absolute; top: 4px; right: 4px; z-index: 3; display: flex; align-items: center; gap: 2px; padding: 2px; background: rgba(255, 255, 255, .92); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 2px 8px rgba(15, 23, 42, .12); }
 .zoomctl button { min-width: 34px; height: 30px; padding: 0 8px; border: 0; border-radius: 8px; background: transparent; font-size: 13px; font-weight: 700; color: var(--sub); }
 .zoomctl button[data-z="+"], .zoomctl button[data-z="-"] { font-size: 18px; color: var(--accent); }

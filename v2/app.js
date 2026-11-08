@@ -749,7 +749,7 @@ async function openEditor(examId) {
       <button class="btn primary" id="done">完了</button>
     </header>
     <div class="ed-main"><div id="stats" class="stats"></div>
-      <div class="chartbox"><div class="chartvp" id="chartvp"><div id="chart"></div></div><div class="zoomctl" id="zoomctl"></div></div></div>
+      <div class="chartbox"><div class="chartvp" id="chartvp"><div class="chartsz" id="chartsz"><div id="chart"></div></div></div><div class="zoomctl" id="zoomctl"></div></div></div>
     <div class="voicebar" id="voicebar" hidden></div>
     <div class="pad" id="pad"></div>
   </div>`;
@@ -865,11 +865,21 @@ function loadZoom() {
 function saveZoom() {
   try { const all = zoomStore(); all[zm.key] = { z: Math.round(zm.z * 100) / 100, area: zm.area }; localStorage.setItem('perio-zoom', JSON.stringify(all)); } catch { /* 保存できない端末 */ }
 }
+// 拡大は transform: scale で（CSS の zoom は iPhone の Safari で位置の計算がずれるため）。外側の箱を拡大後の大きさにして、縦横に動かせるようにする
 function layoutZoom() {
-  const vp = $('#chartvp'), ch = $('#chart');
-  if (!vp || !ch) return;
-  ch.style.width = vp.clientWidth + 'px'; // 等倍で幅ぴったり。zoom で全体（文字も）が大きくなる
-  ch.style.zoom = zm.z;
+  const vp = $('#chartvp'), sz = $('#chartsz'), ch = $('#chart');
+  if (!vp || !sz || !ch) return;
+  const w = vp.clientWidth;
+  ch.style.width = w + 'px'; // 等倍で幅ぴったり
+  ch.style.transform = zm.z === 1 ? '' : `scale(${zm.z})`;
+  sz.style.width = w * zm.z + 'px';
+  sz.style.height = ch.offsetHeight * zm.z + 'px';
+}
+// チャートの中での位置（拡大前の大きさ）。transform の影響を受けない offset で数える
+function posInChart(el, root) {
+  let x = 0, y = 0;
+  while (el && el !== root) { x += el.offsetLeft; y += el.offsetTop; el = el.offsetParent; }
+  return el === root ? [x, y] : null;
 }
 // 拡大率を変える。(cx, cy)（チャート枠の中の位置）にある所は、同じ位置に残す
 function setZoom(z, cx, cy) {
@@ -941,22 +951,21 @@ function followCursor(again) {
   const cells = [...ch.querySelectorAll('td.cur')];
   if (!cells.length) cells.push(...ch.querySelectorAll('td.ctxrow'));
   if (!cells.length) return;
-  const vr = vp.getBoundingClientRect();
-  const rs = cells.map((c) => c.getBoundingClientRect());
-  const L = Math.min(...rs.map((r) => r.left)), R = Math.max(...rs.map((r) => r.right)), T = Math.min(...rs.map((r) => r.top)), B = Math.max(...rs.map((r) => r.bottom));
-  const cx = (L + R) / 2 - vr.left + vp.scrollLeft, cy = (T + B) / 2 - vr.top + vp.scrollTop;
-  let left = cx - vp.clientWidth / 2;
+  const rs = cells.map((c) => { const p = posInChart(c, ch); return p && [p[0], p[1], p[0] + c.offsetWidth, p[1] + c.offsetHeight]; }).filter(Boolean);
+  if (!rs.length) return;
+  const ux = (Math.min(...rs.map((r) => r[0])) + Math.max(...rs.map((r) => r[2]))) / 2; // 拡大前の位置
+  const uy = (Math.min(...rs.map((r) => r[1])) + Math.max(...rs.map((r) => r[3]))) / 2;
+  let left = ux * zm.z - vp.clientWidth / 2;
   if (zm.area) { // 今のエリア＝チャートの左半分か右半分。幅いっぱいに
-    const tb = ch.querySelector('table'), lab = ch.querySelector('th.lab');
-    if (tb) {
-      const tr = tb.getBoundingClientRect(), lw = lab ? lab.getBoundingClientRect().width : 0;
-      const half = (tr.width - lw) / 2, x0 = tr.left - vr.left + vp.scrollLeft + lw;
-      const fz = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, (vp.clientWidth - 8) / (half / zm.z)));
+    const tb = ch.querySelector('table'), lab = ch.querySelector('th.lab'), tp = tb && posInChart(tb, ch);
+    if (tp) {
+      const lw = lab ? lab.offsetWidth : 0, half = (tb.offsetWidth - lw) / 2, x0 = tp[0] + lw;
+      const fz = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, (vp.clientWidth - 8) / half));
       if (!again && Math.abs(fz - zm.z) > 0.01) { setZoom(fz); followCursor(true); return; }
-      left = x0 + (cx < x0 + half ? 0 : half) - 4;
+      left = (x0 + (ux < x0 + half ? 0 : half)) * zm.z - 4;
     }
   }
-  vp.scrollTo({ left, top: cy - vp.clientHeight / 2, behavior: zm.smooth ? 'smooth' : 'auto' });
+  vp.scrollTo({ left, top: uy * zm.z - vp.clientHeight / 2, behavior: zm.smooth ? 'smooth' : 'auto' });
 }
 // 向きを変えたら、その向きの拡大率に
 window.addEventListener('resize', () => {
