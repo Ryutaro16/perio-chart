@@ -1828,7 +1828,7 @@ const SPEECH_FIX = [
 // 数字の読み。読みだけでできている部分（ひらがな・カタカナ・同じ音の漢字の並び）に限って数字に直す
 const KANA_NUM = [['きゅう', '9'], ['じゅういち', ' 11! '], ['じゅうに', ' 12! '], ['じゅう', ' 10! '], ['いち', '1'], ['よん', '4'], ['さん', '3'], ['ろく', '6'],
   ['なな', '7'], ['しち', '7'], ['な', '7'], ['はち', '8'], ['ぜろ', '0'], ['に', '2'], ['ご', '5'], ['く', '9']];
-const HOMOPHONE = { 市: '1', 似: '2', 煮: '2', 酸: '3', 参: '3', 産: '3', 散: '3', 予: '4', 後: '5', 語: '5', 碁: '5', 誤: '5', 録: '6', 蜂: '8', 鉢: '8', 号: '5', 急: '9', 級: '9', 球: '9', 灸: '9' };
+const HOMOPHONE = { 市: '1', 似: '2', 煮: '2', 酸: '3', 参: '3', 産: '3', 散: '3', 予: '4', 後: '5', 語: '5', 碁: '5', 誤: '5', 録: '6', 蜂: '8', 鉢: '8', 号: '5', 日: '1', 急: '9', 級: '9', 球: '9', 灸: '9' };
 const toHira = (t) => t.replace(/[\u30a1-\u30f6]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0x60));
 function kanaToDigits(run) {
   let out = '', i = 0;
@@ -2284,12 +2284,13 @@ function makeTestItem() {
 // 入力画面と同じ読み取り方で、空の練習チャートに試し入力する
 function dryRunSpeech(raw, startIdx) {
   const exam = newExam(null, today(), '', null);
-  const save = { exam: ed.exam, seq: ed.seq, cur: ed.cur, lastSite: voice.lastSite, endedSite: voice.endedSite, hist: voice.hist, spec: voice.specTooth, bopT: voice.bopTooth, bopL: voice.bopLast };
+  const save = { exam: ed.exam, seq: ed.seq, cur: ed.cur, lastSite: voice.lastSite, endedSite: voice.endedSite, hist: voice.hist, spec: voice.specTooth, bopT: voice.bopTooth, bopL: voice.bopLast, mode: voice.mode };
   ed.exam = exam; ed.seq = buildSeq(defaultSpec()); ed.cur = startIdx;
+  voice.mode = 'ppd'; // お題はポケットの読み方。出血モードのまま読み上げテストを開いても、ポケットとして試す
   voice.lastSite = null; voice.endedSite = null; voice.hist = []; voice.specTooth = null; voice.bopTooth = null; voice.bopLast = null;
   try { return { ...handleSpeech(raw, false, true), exam }; } finally {
     ed.exam = save.exam; ed.seq = save.seq; ed.cur = save.cur;
-    voice.lastSite = save.lastSite; voice.endedSite = save.endedSite; voice.hist = save.hist; voice.specTooth = save.spec; voice.bopTooth = save.bopT; voice.bopLast = save.bopL;
+    voice.lastSite = save.lastSite; voice.endedSite = save.endedSite; voice.hist = save.hist; voice.specTooth = save.spec; voice.bopTooth = save.bopT; voice.bopLast = save.bopL; voice.mode = save.mode;
   }
 }
 function judgeTest(item, r) {
