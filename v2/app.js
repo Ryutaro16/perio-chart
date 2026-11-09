@@ -3263,10 +3263,10 @@ async function showPaperDraft(id) {
   if (pd.url) URL.revokeObjectURL(pd.url);
   Object.assign(pd, { draft: d, ei: 0, sel: null, url: d.photo ? URL.createObjectURL(d.photo) : null });
   app().innerHTML = `
-    <header class="bar"><button class="btn ghost" id="pback">‹ 取り込み一覧</button>
-      <label class="hfield">カルテ番号 No.<input id="pno" value="${esc(d.chartNo)}" inputmode="numeric" autocomplete="off" placeholder="例：3927"></label>
-      <span class="sub" id="pmatch"></span><div class="grow"></div>
-      <label class="btn">${d.photo ? '写真を差し替え' : '📷 写真を付ける'}<input type="file" id="pphoto2" class="vh" accept="image/*" capture="environment"></label>
+    <header class="bar paperbar"><button class="btn ghost" id="pback">‹ 取り込み一覧</button>
+      <label class="hfield"><span class="wlab">カルテ番号 </span>No.<input id="pno" value="${esc(d.chartNo)}" inputmode="numeric" autocomplete="off" placeholder="例：3927"></label>
+      <span class="sub" id="pmatch"></span><div class="grow"></div><span class="brk"></span>
+      <label class="btn">${d.photo ? '写真<span class="wlab">を差し替え</span>' : '📷 写真<span class="wlab">を付ける</span>'}<input type="file" id="pphoto2" class="vh" accept="image/*" capture="environment"></label>
       ${d.photo ? `<button class="btn${d.source === 'ai' ? '' : ' primary'}" id="pai">🤖 ${d.source === 'ai' ? 'AIで読み直す' : 'AIで読み取る'}</button>` : ''}
       ${d.aiYen ? `<span class="sub pcost">${aiCostOf(d)}</span>` : ''}
       ${gearBtn(false)}
@@ -3335,7 +3335,15 @@ function paperRender() {
     <span class="pdate">検査日 <input type="date" id="pdatein" value="${esc(e.date)}"> <input id="pdtext" value="${esc(e.dateText)}" placeholder="紙の日付（R7.4.9）" autocomplete="off"></span>
     ${d.exams.length > 1 ? '<button class="tool undo" id="pdelex">この回を削除</button>' : ''}`;
   $('#ptabs').querySelector('.seg.on')?.scrollIntoView({ inline: 'nearest', block: 'nearest' });
-  $('#pgrid').innerHTML = paperGridHTML(e);
+  // iPhone の縦では表が横に動くので、描き直しても見ていた所のままにし、選んだ所が隠れていれば見える所へ動かす
+  const g = $('#pgrid'), gx = g.scrollLeft;
+  g.innerHTML = paperGridHTML(e);
+  g.scrollLeft = gx;
+  const on = g.querySelector('.pc.on');
+  if (on && g.scrollWidth > g.clientWidth) {
+    const r = on.getBoundingClientRect(), gr = g.getBoundingClientRect(), lab = g.querySelector('tr > th').offsetWidth;
+    if (r.left < gr.left + lab || r.right > gr.right) g.scrollLeft += r.left - (gr.left + lab + (gr.width - lab) / 2) + r.width / 2;
+  }
   $('#ppad').innerHTML = paperPadHTML();
   $('#ptabs').onclick = (ev) => {
     const b = ev.target.closest('[data-ei]');
