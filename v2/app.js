@@ -3265,6 +3265,7 @@ async function showPaperList() {
         <p class="sub">紙のチャートを撮影して、<b>最新の1回だけ</b>を取り込みます。紙と同じ並びの表で確かめてから登録します。登録すると、カルテ番号の患者に検査が追加されます（いない患者は「No.番号」の名前で新しく作ります）。</p>
         <div class="row-tools">
           <label class="btn primary big">📷 撮影する・写真を選ぶ<input type="file" id="pphoto" class="vh" accept="image/*" capture="environment"></label>
+          <button class="btn primary big" id="pclip">📋 コピーした内容で読み込む</button>
           <label class="btn">読み取り済みのファイルを読み込む<input type="file" id="pfile" class="vh" accept="application/json,.json,text/plain,.txt"></label>
           <button class="btn" id="ppaste">貼り付けで読み込む</button>
         </div>
@@ -3287,23 +3288,36 @@ async function showPaperList() {
     if (f) await importPaperFile(f);
   };
   $('main').onclick = (e) => { const b = e.target.closest('[data-draft]'); if (b) showPaperDraft(b.dataset.draft); };
-  // ファイルを渡せないとき：読み取った内容（文字）をコピーして、ここに貼り付ける
-  $('#ppaste').onclick = () => {
-    openDialog(`<div class="dlg-body"><h2>貼り付けで読み込む</h2>
-      <p class="sub">読み取った内容（{"kind":"perio-paper" で始まる文字）をコピーして、下の欄に貼り付けてください。</p>
-      <textarea id="ptext" class="text" rows="8" placeholder="ここを長押し →「ペースト」" style="font-family:monospace;font-size:13px"></textarea>
-      <div class="dlg-actions"><button class="btn" data-close>キャンセル</button><button class="btn primary" id="ptextok">読み込む</button></div></div>`, true);
-    $('#ptextok').onclick = async () => {
-      // メモなどから貼り付けると、引用符が “ ” に変わったり前後に文字が付いたりするので整える
-      let t = $('#ptext').value.replace(/[“”„]/g, '"').replace(/[‘’]/g, "'").trim();
-      const i = t.indexOf('{'), j = t.lastIndexOf('}');
-      if (i < 0 || j < i) { await notify('読み取った内容が見つかりません。{"kind":"perio-paper" で始まる文字をすべて貼り付けてください。'); return; }
-      t = t.slice(i, j + 1);
-      closeDialog();
-      await importPaperFile(new File([t], 'paste.txt', { type: 'text/plain' }));
-    };
+  $('#pclip').onclick = () => paperFromClipboard();
+  $('#ppaste').onclick = () => paperPasteDialog();
+}
+// 共有シートの「コピー」や、ショートカット「ペリオに取り込む」でコピーした読み取りデータを、ボタン1つで読み込む。
+// iPhone は読むときに「ペースト」の吹き出しを出す。読めなければ、貼り付けの欄を出す
+async function paperFromClipboard() {
+  let t;
+  try { t = await navigator.clipboard.readText(); } catch { paperPasteDialog('コピーした内容を読めませんでした。下の欄を長押しして「ペースト」してください。'); return; }
+  if (!paperTextJSON(t)) { await notify('コピーした内容に、紙の取り込みデータが見つかりません。\n届いたファイルを開き、共有 →「コピー」をしてから、もう一度押してください。'); return; }
+  await importPaperText(t);
+}
+// ファイルを渡せないとき：読み取った内容（文字）をコピーして、ここに貼り付ける
+function paperPasteDialog(msg) {
+  openDialog(`<div class="dlg-body"><h2>貼り付けで読み込む</h2>
+    <p class="sub">${msg ? esc(msg) : '読み取った内容（{"kind":"perio-paper" で始まる文字）をコピーして、下の欄に貼り付けてください。'}</p>
+    <textarea id="ptext" class="text" rows="8" placeholder="ここを長押し →「ペースト」" style="font-family:monospace;font-size:13px"></textarea>
+    <div class="dlg-actions"><button class="btn" data-close>キャンセル</button><button class="btn primary" id="ptextok">読み込む</button></div></div>`, true);
+  $('#ptextok').onclick = async () => {
+    if (!paperTextJSON($('#ptext').value)) { await notify('読み取った内容が見つかりません。{"kind":"perio-paper" で始まる文字をすべて貼り付けてください。'); return; }
+    closeDialog();
+    await importPaperText($('#ptext').value);
   };
 }
+// メモなどから貼り付けると、引用符が “ ” に変わったり前後に文字が付いたりするので整える。見つからなければ ''
+function paperTextJSON(text) {
+  const t = String(text || '').replace(/[“”„]/g, '"').replace(/[‘’]/g, "'").trim();
+  const i = t.indexOf('{'), j = t.lastIndexOf('}');
+  return i >= 0 && j > i && t.includes('perio-paper') ? t.slice(i, j + 1) : '';
+}
+const importPaperText = (text) => importPaperFile(new File([paperTextJSON(text)], 'paste.txt', { type: 'text/plain' }));
 // Claude Code などで読み取ったファイル（1枚分、または sheets に複数枚）を下書きにする
 async function importPaperFile(file) {
   let data;
@@ -3604,6 +3618,17 @@ async function reopenView() {
 }
 
 /* ================= 起動 ================= */
+// ショートカット「ペリオに取り込む」は、読み取りデータをコピーしてから …/v2/#paste を開く。
+// コピーした内容を読むには画面を押す必要があるので、大きなボタンを1つ出す
+async function openPasteFromShortcut() {
+  history.replaceState(null, '', location.pathname + location.search);
+  await showPaperList();
+  openDialog(`<div class="dlg-body"><h2>紙の取り込み</h2>
+    <p class="sub">コピーした読み取りデータを読み込みます。押したあと、iPhone が出す「ペースト」を押してください。</p>
+    <div class="dlg-actions"><button class="btn" data-close>あとで</button><button class="btn primary big" id="pclip2">📋 読み込む</button></div></div>`);
+  $('#pclip2').onclick = () => { closeDialog(); paperFromClipboard(); };
+}
+
 (async function init() {
   if (location.hash === '#print-sample') {
     // 印刷レイアウトの確認用（保存はしない）
@@ -3623,6 +3648,7 @@ async function reopenView() {
   if (vlog && vlog.items) voice.log = vlog.items;
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   await reopenView();
+  if (location.hash === '#paste') await openPasteFromShortcut();
   checkUpdate();
   setInterval(checkUpdate, UPDATE_INTERVAL);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) checkUpdate(); });
