@@ -776,3 +776,8 @@ body.pr-portrait #print .chart i.dif { font-size: 6pt; }
 .ord .osub .olab { margin: 4px 0; display: block; }
 .ord .obig { max-width: 420px; margin: 8px 0; }
 .exh small.olab { font-weight: 600; margin-left: 6px; }
+/* iPhone：患者一覧のボタンは「コピーから取り込み」を1段、「紙から取り込み」「新規患者」を1段に並べて幅いっぱいに */
+@media (max-width: 600px) {
+  #clipp { flex: 1 1 100%; }
+  #paperp, #addp { flex: 1 1 0; }
+}

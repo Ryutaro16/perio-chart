@@ -479,6 +479,7 @@ async function showList() {
       ${backupBanner(patients.length)}
       <div class="row-tools">
         <label class="searchbox"><svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M15.5 15.5 21 21" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg><input id="q" class="search" type="search" placeholder="氏名・ふりがな・カルテ番号で検索" autocomplete="off"></label>
+        <button class="btn big" id="clipp" title="ショートカット「ペリオに取り込む」などでコピーした読み取りデータを読み込む">📋 コピーから取り込み</button>
         <button class="btn big" id="paperp">📷 紙から取り込み</button>
         <button class="btn primary big" id="addp">＋ 新規患者</button>
       </div>
@@ -515,6 +516,7 @@ async function showList() {
   }));
   $('#addp').onclick = () => patientDialog(null, (p) => showPatient(p.id));
   $('#paperp').onclick = () => showPaperList();
+  $('#clipp').onclick = () => paperFromClipboard();
   $('#plist').onclick = (e) => { const b = e.target.closest('[data-pid]'); if (b) showPatient(b.dataset.pid); };
 }
 
