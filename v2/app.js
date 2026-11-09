@@ -474,7 +474,7 @@ async function showList() {
     : byKana);
   sortPatients();
   app().innerHTML = `
-    <header class="bar brandbar"><span class="logo" aria-hidden="true"></span><h1>ペリオチャート <span class="ver">v2</span></h1><div class="grow"></div>${gearBtn()}</header>
+    <header class="bar brandbar"><img class="logo" src="icon.png" alt="" aria-hidden="true"><h1>ペリオチャート</h1><div class="grow"></div>${gearBtn()}</header>
     <main class="wrap">
       ${backupBanner(patients.length)}
       <div class="row-tools">
