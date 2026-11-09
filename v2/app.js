@@ -3143,7 +3143,17 @@ function paperNormalizeExam(x) {
     else e.unsure[u] = true;
   }
   delete e.len;
+  if (Number.isInteger(x.row) && x.row >= 1 && x.row <= 5) e.row = x.row;
   return e;
+}
+// 紙から取り込むのは最新の1回だけ（いちばん新しい日付の回。日付がなければいちばん下の回）。
+// 写真をその回へ動かすため、紙の上から何番目の枠か（row）を覚えておく
+function paperLatest(exams) {
+  if (!exams.length) return [paperBlankExam()];
+  exams.forEach((e, i) => { e.row ??= i + 1; });
+  let best = exams[exams.length - 1];
+  for (const e of exams) if (e.date && (!best.date || e.date >= best.date)) best = e;
+  return [best];
 }
 const paperDrafts = async () => (await DB.all('settings')).filter((r) => String(r.key).startsWith('paper:')).sort((a, b) => b.createdAt - a.createdAt);
 const savePaper = (d) => { d.updatedAt = Date.now(); return DB.put('settings', d); };
@@ -3186,15 +3196,14 @@ async function paperReadAI(d) {
   if (err) { await notify(err); return; }
   const sheet = r.sheet || {};
   if (!d.chartNo && sheet.chartNo) d.chartNo = String(sheet.chartNo).trim();
-  d.exams = (sheet.exams || []).map(paperNormalizeExam);
-  if (!d.exams.length) d.exams = [paperBlankExam()];
+  d.exams = paperLatest((sheet.exams || []).map(paperNormalizeExam));
   d.source = 'ai';
   d.aiRuns = [...(d.aiRuns || []), r.yen || 0];
   d.aiYen = (d.aiYen || 0) + (r.yen || 0);
   await savePaper(d);
   await showPaperDraft(d.id);
   const uns = d.exams.reduce((n, e) => n + Object.keys(e.unsure).length, 0);
-  await notify(`${d.exams.length}回分を読み取りました（${yenText(r.yen || 0)}）。\n${uns ? `黄色の${uns}か所（自信がない所）から、` : ''}写真と見比べて確かめてから登録してください。`);
+  await notify(`最新の回（${d.exams[0].dateText || fmtDate(d.exams[0].date) || '日付なし'}）を読み取りました（${yenText(r.yen || 0)}）。\n${uns ? `黄色の${uns}か所（自信がない所）から、` : ''}写真と見比べて確かめてから登録してください。`);
 }
 
 // ---- かかった金額（秘書アプリ・音声カルテと同じ形） ----
@@ -3253,7 +3262,7 @@ async function showPaperList() {
     <main class="wrap stack">
       <section class="card">
         <h2>新しく取り込む</h2>
-        <p class="sub">紙のチャート1枚（検査5回分まで）を撮影して、紙と同じ並びの表で確かめてから登録します。登録すると、カルテ番号の患者に検査が追加されます（いない患者は「No.番号」の名前で新しく作ります）。</p>
+        <p class="sub">紙のチャートを撮影して、<b>最新の1回だけ</b>を取り込みます。紙と同じ並びの表で確かめてから登録します。登録すると、カルテ番号の患者に検査が追加されます（いない患者は「No.番号」の名前で新しく作ります）。</p>
         <div class="row-tools">
           <label class="btn primary big">📷 撮影する・写真を選ぶ<input type="file" id="pphoto" class="vh" accept="image/*" capture="environment"></label>
           <label class="btn">読み取り済みのファイルを読み込む<input type="file" id="pfile" class="vh" accept="application/json,.json,text/plain,.txt"></label>
@@ -3303,12 +3312,11 @@ async function importPaperFile(file) {
   if (!sheets) { await notify('紙のチャートの読み取りファイルではありません。'); return; }
   let first = null;
   for (const s of sheets) {
-    const d = newPaperDraft({ chartNo: String(s.chartNo || ''), source: 'file', exams: (s.exams || []).map(paperNormalizeExam) });
-    if (!d.exams.length) d.exams = [paperBlankExam()];
+    const d = newPaperDraft({ chartNo: String(s.chartNo || ''), source: 'file', exams: paperLatest((s.exams || []).map(paperNormalizeExam)) });
     await savePaper(d);
     first ||= d;
   }
-  await notify(`${sheets.length}枚分を読み込みました。写真と見比べて確かめてから登録してください。`);
+  await notify(`${sheets.length}枚分の最新の回を読み込みました。写真と見比べて確かめてから登録してください。`);
   if (sheets.length === 1) showPaperDraft(first.id); else showPaperList();
 }
 
@@ -3376,7 +3384,8 @@ function paperFocusPhoto() {
   if (!box || !img || !img.naturalHeight) return;
   if (pd.zoom < 1.6) { pd.zoom = 1.6; img.style.width = '160%'; }
   const h = img.clientHeight, w = img.clientWidth;
-  const top = h * (0.04 + pd.ei * 0.18 + (pd.sel && pd.sel.t > 30 ? 0.085 : 0)) - 6; // 下顎を選んだら、その回の下半分へ
+  const row = (pd.draft.exams[pd.ei].row || pd.ei + 1) - 1; // 紙の上から何番目の枠か（最新の回だけ取り込むので、たいてい下のほう）
+  const top = h * (0.04 + row * 0.18 + (pd.sel && pd.sel.t > 30 ? 0.085 : 0)) - 6; // 下顎を選んだら、その回の下半分へ
   box.scrollTop = Math.max(0, top);
   if (pd.sel) {
     const row = (pd.sel.t > 30 ? LOWER : UPPER).indexOf(pd.sel.t);
