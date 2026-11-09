@@ -437,7 +437,7 @@ function backupBanner(n) {
   const days = last ? Math.floor((Date.now() - last) / 86400000) : null;
   if (days !== null && days < 7) return '';
   return `<div class="banner">${days === null ? 'まだバックアップがありません。' : `最後のバックアップから${days}日経っています。`}
-    iPadの故障・紛失に備えて、院内PCへ保存してください。<button class="btn" data-act="backup">今すぐバックアップ</button></div>`;
+    端末の故障・紛失に備えて、パソコンや iCloud Drive などへ保存してください。<button class="btn" data-act="backup">今すぐバックアップ</button></div>`;
 }
 
 // 設定マーク（どの画面からでも設定を開き、戻ると元の画面へ）
@@ -554,7 +554,7 @@ function historyCardHTML(e, prev) {
     <div class="hhead"><b>${fmtDate(e.date)}</b>${isBasic(e) ? '<span class="kindtag">基本検査</span>' : ''}${e.examiner ? `<span class="sub">検査者：${esc(e.examiner)}</span>` : ''}
       ${!prev ? '<span class="sub">初回の検査</span>' : dc.other ? `<span class="sub">前回 ${fmtDate(prev.date)} は${kindName(prev)}（測り方が違うので差は出しません）</span>` : `<span class="sub">前回 ${fmtDate(prev.date)} との差：<i class="dif dn">−</i>改善 ${dc.better}${isBasic(e) ? '歯' : '部位'}　<i class="dif up">+</i>悪化 ${dc.worse}${isBasic(e) ? '歯' : '部位'}</span>`}
       <div class="grow"></div><button class="btn" data-open="${e.id}">開く</button><button class="btn" data-print="${e.id}">印刷</button></div>
-    <div class="hchart">${chartHTML(e, { prev, mini: true })}</div>
+    <div class="hchart" data-hx="${e.id}">${chartHTML(e, { prev, mini: true })}</div><p class="sub hzoomhint">チャートを押すと、大きくして見られます（指で拡大）</p>
     <div class="hstats">
       ${s.basic ? '' : `<span>PCR <b>${fmtPct(s.pcr)}</b></span>`}<span>BOP <b>${fmtPct(s.boppct)}</b></span>
       <span>PPD 〜3mm <b>${fmtPct(le3)}</b>・4〜5mm <b>${fmtPct(mid)}</b>・6mm以上 <b>${fmtPct(ge6pct)}</b></span>
@@ -581,6 +581,57 @@ function kpiHTML(live) {
   }).join('');
   return `<div class="kpis"><div class="kpicap">最新 ${fmtDate(live[0].date)}${isBasic(live[0]) ? '（基本検査）' : ''}${p1 ? `<small>前回 ${fmtDate(p1.date)} と比べて</small>` : ''}</div>${tiles}</div>`;
 }
+// iPhone：経過のチャートを画面いっぱいに開き、ピンチと −＋ で拡大して見る（入力画面の拡大と同じく transform: scale）
+function openChartViewer(html, title) {
+  const ov = document.createElement('div');
+  ov.className = 'chview';
+  ov.innerHTML = `<div class="chvbar"><b>${esc(title)}</b><div class="grow"></div>
+      <button class="tool" data-cv="-" aria-label="縮小">−</button><button class="tool" data-cv="1">全体</button><button class="tool" data-cv="+" aria-label="拡大">＋</button>
+      <button class="btn primary" data-cv="x">閉じる</button></div>
+    <div class="chvp"><div class="chsz"><div class="chin">${html}</div></div></div>`;
+  document.body.append(ov);
+  const vp = ov.querySelector('.chvp'), sz = ov.querySelector('.chsz'), ch = ov.querySelector('.chin');
+  let z = 1;
+  const layout = () => {
+    const w = vp.clientWidth;
+    ch.style.width = w + 'px';
+    ch.style.transform = z === 1 ? '' : `scale(${z})`;
+    sz.style.width = w * z + 'px';
+    sz.style.height = ch.offsetHeight * z + 'px';
+  };
+  const setZ = (nz, cx = vp.clientWidth / 2, cy = vp.clientHeight / 2) => {
+    nz = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, nz));
+    const px = (vp.scrollLeft + cx) / z, py = (vp.scrollTop + cy) / z;
+    z = nz; layout();
+    vp.scrollLeft = px * z - cx; vp.scrollTop = py * z - cy;
+  };
+  const close = () => { window.removeEventListener('resize', layout); ov.remove(); };
+  ov.querySelector('.chvbar').onclick = (e) => {
+    const a = e.target.closest('[data-cv]')?.dataset.cv;
+    if (a === 'x') close();
+    else if (a === '1') setZ(1);
+    else if (a) setZ((a === '+' ? ZOOM_STEPS.find((v) => v > z + 0.01) : [...ZOOM_STEPS].reverse().find((v) => v < z - 0.01)) ?? z);
+  };
+  let pinch = null;
+  const dist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  vp.addEventListener('touchstart', (e) => { if (e.touches.length === 2) pinch = { d: dist(e.touches), z }; }, { passive: true });
+  vp.addEventListener('touchmove', (e) => {
+    if (!pinch || e.touches.length !== 2) return;
+    e.preventDefault();
+    const r = vp.getBoundingClientRect(), t = e.touches;
+    setZ(pinch.z * dist(t) / pinch.d, (t[0].clientX + t[1].clientX) / 2 - r.left, (t[0].clientY + t[1].clientY) / 2 - r.top);
+  }, { passive: false });
+  vp.addEventListener('touchend', (e) => { if (e.touches.length < 2) pinch = null; });
+  vp.addEventListener('wheel', (e) => {
+    if (!e.ctrlKey) return;
+    e.preventDefault();
+    const r = vp.getBoundingClientRect();
+    setZ(z * Math.exp(-e.deltaY / 150), e.clientX - r.left, e.clientY - r.top);
+  }, { passive: false });
+  window.addEventListener('resize', layout); // 縦横を変えたとき
+  layout();
+}
+
 async function showPatient(pid, showDeleted = false) {
   const p = await DB.get('patients', pid);
   if (!p) return showList();
@@ -589,9 +640,10 @@ async function showPatient(pid, showDeleted = false) {
   const live = exams.filter((e) => !e.deletedAt), dead = exams.filter((e) => e.deletedAt);
   const rows = (showDeleted ? dead : live).map((e) => {
     const s = calcStats(e);
-    return `<tr><td class="d">${fmtDate(e.date)}${isBasic(e) ? '<span class="kindtag">基本</span>' : ''}</td><td>${s.present}</td><td>${s.mean == null ? '—' : s.mean.toFixed(1)}</td>
-      <td>${fmtPct(s.ge4pct)}</td><td>${s.ge6 == null ? '—' : s.ge6}</td><td>${fmtPct(s.boppct)}</td><td>${s.basic ? '—' : fmtPct(s.pcr)}</td><td>${s.basic ? '—' : s.furT}</td>
-      <td>${esc(e.examiner || '')}</td>
+    // data-l は iPhone でカードにしたときの見出し（o1〜o7 はカードの中の並び順）
+    return `<tr><td class="d">${fmtDate(e.date)}${isBasic(e) ? '<span class="kindtag">基本</span>' : ''}</td><td class="o6" data-l="現在歯数">${s.present}</td><td class="o3" data-l="平均PPD">${s.mean == null ? '—' : s.mean.toFixed(1)}</td>
+      <td class="o2" data-l="4mm以上">${fmtPct(s.ge4pct)}</td><td class="o5" data-l="6mm以上">${s.ge6 == null ? '—' : s.ge6}</td><td class="o1" data-l="BOP">${fmtPct(s.boppct)}</td><td class="o4" data-l="PCR">${s.basic ? '—' : fmtPct(s.pcr)}</td><td class="o7" data-l="分岐部">${s.basic ? '—' : s.furT}</td>
+      <td class="ex">${e.examiner ? `<span>検査者：</span>${esc(e.examiner)}` : ''}</td>
       <td class="acts">${showDeleted
         ? `<button class="btn" data-restore="${e.id}">元に戻す</button>`
         : `<button class="btn primary" data-open="${e.id}">開く</button><button class="btn" data-print="${e.id}">印刷</button><button class="btn danger" data-del="${e.id}">削除</button>`}</td></tr>`;
@@ -622,6 +674,12 @@ async function showPatient(pid, showDeleted = false) {
   if ($('#newx')) $('#newx').onclick = () => newExamDialog(p, live[0]);
   if ($('#tglDel')) $('#tglDel').onclick = () => showPatient(pid, !showDeleted);
   $('main').onclick = async (e) => {
+    const hx = e.target.closest('[data-hx]');
+    if (hx && isPhone()) {
+      const i = live.findIndex((x) => x.id === hx.dataset.hx);
+      if (i >= 0) openChartViewer(chartHTML(live[i], { prev: live[i + 1] || null, mini: true }), fmtDate(live[i].date));
+      return;
+    }
     const b = e.target.closest('button');
     if (!b) return;
     const find = (id) => exams.find((x) => x.id === id);
@@ -1496,7 +1554,7 @@ function setVoiceMode(mode) {
 }
 async function voiceStart() {
   unlockAudio();
-  if (!SR) { voiceMsg('この画面では音声認識が使えません。iPadは Safari のタブで、Macは Safari か Chrome で開いてください'); return; }
+  if (!SR) { voiceMsg('この画面では音声認識が使えません。iPhone・iPadは Safari のタブで、Macは Safari か Chrome で開いてください'); return; }
   if (voice.starting) return;
   voice.starting = true;
   await micPrepare();
@@ -1514,7 +1572,7 @@ async function voiceStart() {
     if (e.error === 'no-speech' || e.error === 'aborted') return;
     if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
       voice.on = false;
-      voiceMsg('マイクが使えません。マイクの使用を許可してください（iPadでは https での接続が必要です）');
+      voiceMsg('マイクが使えません。マイクの使用を許可してください（iPhone・iPadでは https での接続が必要です）');
     } else voiceMsg('音声認識のエラー：' + esc(e.error));
   };
   // 無音が続くと止まることがあるので、聞き取り中は自動で再開する
@@ -1586,16 +1644,16 @@ async function micPrepare() {
 function micRelease() { if (mic.stream) mic.stream.getTracks().forEach((t) => t.stop()); mic.stream = null; }
 function micSettingsHTML() {
   return `<section class="card"><h2>使うマイク（外付けマイク・試し）</h2>
-      <p class="sub">ピンマイクなどをつないでも、音声入力が iPad 本体のマイクで聞き取ってしまうときに使います。①「マイクの一覧を読み込む」→ ② つないだマイクを選ぶ →「音の大きさを見る」で、そのマイクに話すとバーが動くか確かめる → ③ 読み上げテストで、iPad から離れて小さな声で話しても聞き取れるか確かめます。方法1でだめなら方法2を試してください。</p>
+      <p class="sub">ピンマイクなどをつないでも、音声入力が本体のマイクで聞き取ってしまうときに使います。①「マイクの一覧を読み込む」→ ② つないだマイクを選ぶ →「音の大きさを見る」で、そのマイクに話すとバーが動くか確かめる → ③ 読み上げテストで、端末から離れて小さな声で話しても聞き取れるか確かめます。方法1でだめなら方法2を試してください。</p>
       <div class="row-tools"><button class="btn" id="micLoad">マイクの一覧を読み込む</button>
-        <select id="micSel" class="text" style="max-width:320px"><option value="">自動（iPad にまかせる）</option>${settings.micId ? `<option value="${esc(settings.micId)}" selected>${esc(settings.micLabel || '選んだマイク')}</option>` : ''}</select></div>
+        <select id="micSel" class="text" style="max-width:320px"><option value="">自動（端末にまかせる）</option>${settings.micId ? `<option value="${esc(settings.micId)}" selected>${esc(settings.micLabel || '選んだマイク')}</option>` : ''}</select></div>
       <div class="row-tools">${[[false, '方法1：始める前に開いてすぐ閉じる'], [true, '方法2：聞き取りのあいだ開いたままにする']].map(([v, l]) => `<label class="mini"><input type="radio" name="michold" value="${v ? 1 : 0}" ${!!settings.micHold === v ? 'checked' : ''}> ${l}</label>`).join('')}</div>
       <div class="row-tools"><button class="btn" id="micMeter">音の大きさを見る（10秒）</button><div class="micbar"><i id="micLvl"></i></div></div>
-      <p class="sub" id="micSt">${settings.micId ? `選んでいるマイク：${esc(settings.micLabel || '')}` : 'いまは自動（iPad にまかせる）です'}</p></section>`;
+      <p class="sub" id="micSt">${settings.micId ? `選んでいるマイク：${esc(settings.micLabel || '')}` : 'いまは自動（端末にまかせる）です'}</p></section>`;
 }
 function bindMicSettings() {
   const fill = (list) => {
-    $('#micSel').innerHTML = `<option value="">自動（iPad にまかせる）</option>` + list.map((d, i) => `<option value="${esc(d.deviceId)}" ${d.deviceId === settings.micId || (settings.micLabel && d.label === settings.micLabel) ? 'selected' : ''}>${esc(d.label || `マイク${i + 1}`)}</option>`).join('');
+    $('#micSel').innerHTML = `<option value="">自動（端末にまかせる）</option>` + list.map((d, i) => `<option value="${esc(d.deviceId)}" ${d.deviceId === settings.micId || (settings.micLabel && d.label === settings.micLabel) ? 'selected' : ''}>${esc(d.label || `マイク${i + 1}`)}</option>`).join('');
   };
   $('#micLoad').onclick = async () => {
     // 名前は、マイクの使用を一度許可しないと出ない
@@ -1609,7 +1667,7 @@ function bindMicSettings() {
     settings.micId = e.target.value || null;
     settings.micLabel = e.target.value ? o.textContent : '';
     await saveSettings();
-    $('#micSt').textContent = settings.micId ? `選んでいるマイク：${settings.micLabel}` : 'いまは自動（iPad にまかせる）です';
+    $('#micSt').textContent = settings.micId ? `選んでいるマイク：${settings.micLabel}` : 'いまは自動（端末にまかせる）です';
   };
   document.querySelectorAll('input[name=michold]').forEach((r) => (r.onchange = () => { settings.micHold = r.value === '1'; saveSettings(); }));
   $('#micMeter').onclick = async () => {
@@ -2477,7 +2535,7 @@ async function showVoiceTest() {
   vtRender();
 }
 async function vtStart() {
-  if (!SR) { vt.last = { msg: 'この画面では音声認識が使えません。iPadは Safari のタブで開いてください' }; vtRender(); return; }
+  if (!SR) { vt.last = { msg: 'この画面では音声認識が使えません。iPhone・iPadは Safari のタブで開いてください' }; vtRender(); return; }
   await micPrepare();
   const r = new SR();
   r.lang = 'ja-JP'; r.continuous = true; r.interimResults = true;
@@ -2884,9 +2942,9 @@ async function showSettings() {
           <div class="exord"><span>精密：${x.order ? esc(orderSummary(x.order)) : 'いつもの順番'}</span><span>基本：${x.order || x.basicOrder ? esc(basicSummary(x.basicOrder)) : 'いつもの順番'}</span></div>
           <button class="btn" data-ord="${x.id}">変える</button><button class="btn danger" data-exdel="${x.id}">削除</button></div>`).join('') || '<p class="sub">まだ登録していません。</p>'}
         <button class="btn" data-ord="new">＋ 人を追加</button>
-        <p class="hint">名前と順番は、このiPadの中にだけ保存します（バックアップには入ります）。</p></section>
+        <p class="hint">名前と順番は、この端末の中にだけ保存します（バックアップには入ります）。</p></section>
       <section class="card"><h2>バックアップ</h2>
-        <p>データはこのiPadの中だけに保存されています。故障・紛失に備えて、定期的に書き出して院内PCに保存してください。</p>
+        <p>データはこの端末（iPhone・iPad）の中だけに保存されています。故障・紛失に備えて、定期的に書き出してパソコンや iCloud Drive などに保存してください。</p>
         <p class="sub">最終バックアップ：${settings.lastBackupAt ? new Date(settings.lastBackupAt).toLocaleString('ja-JP') : 'まだありません'}</p>
         <div class="row-tools"><button class="btn primary" data-act="backup">バックアップを書き出す</button>
           <label class="btn">バックアップから読み込む<input type="file" id="imp" class="vh" accept="application/json,.json"></label></div>
@@ -2914,7 +2972,7 @@ async function showSettings() {
   }));
   $('#imp').onchange = (e) => { const f = e.target.files[0]; if (f) importBackup(f); e.target.value = ''; };
   $('#vtOpen').onclick = showVoiceTest;
-  const passSt = (p) => ($('#aipassst').textContent = p ? '合言葉は入力済みです（このiPadの中だけに保存。バックアップには入りません）' : 'まだ入力されていません');
+  const passSt = (p) => ($('#aipassst').textContent = p ? '合言葉は入力済みです（この端末の中だけに保存。バックアップには入りません）' : 'まだ入力されていません');
   passSt(await aiPass());
   $('#aipass').onchange = async (e) => { const pass = e.target.value.trim(); await DB.put('settings', { key: 'aiRead', pass }); e.target.value = ''; passSt(pass); loadAiCost(); };
   loadAiCost();
@@ -3170,7 +3228,7 @@ async function loadAiCost() {
       <tr class="sum"><td>これまでの合計<small>${count}回・${new Date(st.first).toLocaleDateString('ja-JP')}から</small></td><td class="r">${yenText(total)}</td></tr></table>
     <details><summary>日ごと</summary><table class="costtbl">${st.days.map(dayRow).join('')}</table></details>
     <div class="row-tools"><button class="btn" id="aicsv">1回ごとの記録をCSVで書き出す（Excel・Numbers用）</button></div>
-    <p class="sub">すべてのiPadの合計。1ドル150円で計算した目安です。「読み直す」も1回に数えます。写真や読み取った数字は記録しません（日時・待ち時間・金額だけ）。</p>`;
+    <p class="sub">すべての端末の合計。1ドル150円で計算した目安です。「読み直す」も1回に数えます。写真や読み取った数字は記録しません（日時・待ち時間・金額だけ）。</p>`;
   $('#aicsv').onclick = async () => {
     let csv;
     try { csv = (await aiUsage('perio-csv')).csv; } catch (e) { await notify('書き出せませんでした：' + e.message); return; }
