@@ -1344,7 +1344,7 @@ function onChartTap(e) {
 }
 
 /* ================= 音声入力（ポケット） ================= */
-// Safari／Chrome の音声認識を使う。ホーム画面に追加したアプリでは使えない（Safari のタブで開く）
+// Safari／Chrome の音声認識を使う。ホーム画面に追加したアプリでも使える（2026-11-12 iPhone で確認。以前の iOS では使えなかった）
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 const voice = { mode: 'ppd', ctx: null, rec: null, on: false, lastSite: null, endedSite: null, hist: [], interim: '', msg: '', prov: null, timer: null, log: [], cue: null };
 const VOICE_EARLY_MS = 250; // 話している途中でも、この時間言葉が止まったら仮に入力する
@@ -1611,7 +1611,7 @@ function setVoiceMode(mode) {
 }
 async function voiceStart() {
   unlockAudio();
-  if (!SR) { voiceMsg('この画面では音声認識が使えません。iPhone・iPadは Safari のタブで、Macは Safari か Chrome で開いてください'); return; }
+  if (!SR) { voiceMsg('この画面では音声認識が使えません。iPhone・iPadは iOS を新しくしてください。Macは Safari か Chrome で開いてください'); return; }
   if (voice.starting) return;
   voice.starting = true;
   await micPrepare();
@@ -2597,7 +2597,7 @@ async function showVoiceTest() {
   vtRender();
 }
 async function vtStart() {
-  if (!SR) { vt.last = { msg: 'この画面では音声認識が使えません。iPhone・iPadは Safari のタブで開いてください' }; vtRender(); return; }
+  if (!SR) { vt.last = { msg: 'この画面では音声認識が使えません。iPhone・iPadは iOS を新しくしてください' }; vtRender(); return; }
   await micPrepare();
   const r = new SR();
   r.lang = 'ja-JP'; r.continuous = true; r.interimResults = true;
