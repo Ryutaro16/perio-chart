@@ -906,6 +906,7 @@ function refresh() {
   $('#pad').innerHTML = padHTML();
   ed.flash = '';
   if (voice.on) renderVoice(); // 帯の「次」の場所を合わせる
+  paintMarks();
   followCursor();
 }
 
@@ -1411,6 +1412,7 @@ function undoProv() {
   voice.prov = null;
   if (!p) return;
   if (p.ops && p.ops.length) {
+    for (const o of p.ops) voice.marks?.delete(`${o.t}:${o.k}`);
     undoVoiceOps(p.ops);
     const i = voice.hist.indexOf(p.ops);
     if (i >= 0) voice.hist.splice(i, 1);
@@ -1436,6 +1438,7 @@ function voiceInterim(text) {
       specTooth: voice.specTooth, bopTooth: voice.bopTooth, bopLast: voice.bopLast }; // 仮入力を戻すときに、言葉の続きの記憶も戻す
     voice.junkCut = false; voice.specCut = false;
     const ops = handleSpeech(text, true);
+    markVoiceOps(ops);
     if (ops) { voice.prov = { text, ops, ...before, guide: voice.lastGuide }; diag().prov++; } else {
       const d = diag(), tk = tokenizeSpeech(text);
       d.nul++;
@@ -1458,6 +1461,7 @@ function voiceFinal(text) {
   if (!voice.prov) voice.cue = ed.cur;
   undoProv(); // 仮入力と違う文で確定したら、仮入力を戻してから入れ直す
   voice.lastOps = handleSpeech(text);
+  markVoiceOps(voice.lastOps);
   ppdCue();
   voice.cue = null;
   const quiet = /秒の間/.test(voice.cutReason || '');
@@ -1473,11 +1477,62 @@ function addVoiceLog(text, startIdx) {
   const s = ed.seq[startIdx];
   const info = diagText(voice.diag, voice.cutReason);
   voice.diag = null; voice.cutReason = ''; voice.pend = '';
-  voice.log.unshift({ id: uid(), time: new Date().toLocaleString('ja-JP'), start: s ? siteName(s.t, s.k) : '', raw: text, result: voice.lastResult || '', ok: null, correct: '', info });
+  voice.log.unshift({ id: uid(), time: new Date().toLocaleString('ja-JP'), start: s ? siteName(s.t, s.k) : '', raw: text, result: voice.lastResult || '', ok: voice.ngNext ? false : null, correct: '', info });
+  voice.ngNext = false;
   voice.log.length = Math.min(voice.log.length, VOICE_LOG_MAX);
   saveVoiceLog();
 }
 const saveVoiceLog = () => DB.put('settings', { key: 'voicelog', items: voice.log }).catch(() => {});
+// 入力中の「✕ 違う」：直前の聞き取りに × を付ける（話している途中なら、その文が確定したときに付ける）。理由はあとで聞き取りの記録で選ぶ
+function markLastVoiceNG() {
+  if (voice.prov || (voice.interim || '').trim()) { voice.ngNext = true; voiceMsg('この文に × を付けます（理由はあとで「聞き取りの記録」で選べます）'); return; }
+  const l = voice.log[0];
+  if (!l) { voiceMsg('まだ聞き取りの記録がありません'); return; }
+  l.ok = false; saveVoiceLog();
+  voiceMsg(`「${esc(l.raw)}」に × を付けました（理由はあとで「聞き取りの記録」で選べます）`);
+}
+
+// 声で入った所を少しのあいだ光らせる（vnew）。深すぎる値・前回より急に深くなった値は橙で長めに光らせ、ピピッと知らせる（vchk。入力はそのまま）
+const VMARK_MS = 2500, VCHK_MS = 8000, VCHK_MIN = 9, VCHK_JUMP = 3;
+function markVoiceOps(ops) {
+  if (!ops || !ops.length || !ed.exam) return;
+  voice.marks ||= new Map();
+  const now = Date.now(), T = ed.exam.teeth, chk = [];
+  for (const o of ops) {
+    if (!['ppd', 'bop', 'pus'].includes(o.field) || o.k == null) continue;
+    let kind = 'vnew';
+    if (o.field === 'ppd') {
+      const v = T[o.t].ppd[o.k], pt = ed.prev && ed.prev.teeth[o.t];
+      const pv = pt && !pt.missing && isBasic(ed.prev) === isBasic(ed.exam) ? pt.ppd[o.k] : null;
+      if (v != null && (v >= VCHK_MIN || (pv != null && v - pv >= VCHK_JUMP))) { kind = 'vchk'; chk.push(`${o.k === 'x' ? toothName(o.t) : siteName(o.t, o.k)} ${v}`); }
+    }
+    voice.marks.set(`${o.t}:${o.k}`, { kind, until: now + (kind === 'vchk' ? VCHK_MS : VMARK_MS) });
+  }
+  paintMarks();
+  clearTimeout(voice.markTimer);
+  voice.markTimer = setTimeout(expireMarks, VMARK_MS + 50);
+  if (chk.length) {
+    voice.warn = [voice.warn, `確かめて：${chk.join('、')}（入れました）`].filter(Boolean).join('／');
+    renderVoice();
+    if (guideOn('enabled')) playTone('chk');
+  }
+}
+function expireMarks() {
+  if (!voice.marks) return;
+  const now = Date.now();
+  for (const [k, m] of voice.marks) if (m.until <= now) voice.marks.delete(k);
+  paintMarks();
+  if (voice.marks.size) voice.markTimer = setTimeout(expireMarks, Math.min(...[...voice.marks.values()].map((m) => m.until)) - now + 50);
+}
+function paintMarks() {
+  const ch = $('#chart');
+  if (!ch) return;
+  ch.querySelectorAll('td.vnew, td.vchk').forEach((td) => td.classList.remove('vnew', 'vchk'));
+  for (const [key, m] of voice.marks || []) {
+    const [t, k] = key.split(':');
+    ch.querySelector(`td[data-t="${t}"][data-k="${k}"]`)?.classList.add(m.kind);
+  }
+}
 // 違っていた行は、どう違ったかを選ぶだけでよい（「正しくは」は分かるときだけ）
 const VLOG_WHY = [['miss', '入らなかった'], ['num', '数字が違う'], ['site', '場所が違う'], ['extra', '言っていないのに入った'], ['other', 'その他']];
 const vlogWhy = (l) => (VLOG_WHY.find(([k]) => k === l.why) || [])[1] || '';
@@ -1709,7 +1764,7 @@ function unlockAudio() {
   try { audioCtx ||= new (window.AudioContext || window.webkitAudioContext)(); audioCtx.resume(); } catch { /* 音が出せない環境 */ }
   try { if (window.speechSynthesis) speechSynthesis.speak(new SpeechSynthesisUtterance('')); } catch { /* 読み上げが使えない環境 */ }
 }
-const TONES = { chime: [[880, 0, 0.13], [1318, 0.14, 0.22]], buzz: [[196, 0, 0.3]], pop: [[1100, 0, 0.06]] };
+const TONES = { chime: [[880, 0, 0.13], [1318, 0.14, 0.22]], buzz: [[196, 0, 0.3]], pop: [[1100, 0, 0.06]], chk: [[1568, 0, 0.07], [1568, 0.12, 0.07]] };
 function playTone(kind) {
   return new Promise((res) => {
     if (!audioCtx) { res(); return; }
@@ -1964,17 +2019,19 @@ function renderVoice() {
   const where = voice.on && voice.mode !== 'bop' && c && ed.exam
     ? `<span class="vwhere"><small>次</small>${voice.endedSite ? '全部位 入力済み' : `${toothName(c.t)}<b>${c.k === 'x' ? 'ポケット' : `${sideName(c.t, c.k[0])} ${POS[c.k[1]]}`}</b>`}</span>` : '';
   v.innerHTML = `<div class="vrow">${state}${where}${voice.on && voice.mode === 'bop' && voice.ctx ? `<span class="vctx">出血入力中：${ctxLabel(voice.ctx)}</span>` : ''}${voice.warn ? `<span class="vwarn">⚠ ${esc(voice.warn)}</span>` : ''}<span class="vm">${voice.msg}</span>${voice.interim ? `<span class="vi">${esc(voice.interim)}…</span>` : ''}
-    <button class="tool undo vlogbtn" id="vhelp">？ 話し方</button><button class="tool undo" id="vmute">${voice.muted ? '🔇 案内オフ' : '🔈 案内'}</button><button class="tool undo" id="vlog">聞き取りの記録</button><button class="tool undo" id="vtest">読み上げテスト</button></div>
+    <button class="tool undo vlogbtn vng" id="vng" title="今の聞き取りは違う">✕ 違う</button><button class="tool undo" id="vhelp">？ 話し方</button><button class="tool undo" id="vmute">${voice.muted ? '🔇 案内オフ' : '🔈 案内'}</button><button class="tool undo" id="vlog">聞き取りの記録</button><button class="tool undo" id="vtest">読み上げテスト</button></div>
 `;
   $('#vmute').onclick = () => { voice.muted = !voice.muted; if (voice.muted) { guideQ.length = 0; try { speechSynthesis.cancel(); } catch { /* なし */ } } renderVoice(); };
   $('#vlog').onclick = showVoiceLog;
   $('#vtest').onclick = showVoiceTest;
   $('#vhelp').onclick = showVoiceHelp;
+  $('#vng').onclick = markLastVoiceNG;
 }
 // 話し方の早見表（言い方と、音の意味）
 function showVoiceHelp() {
   const row = (say, what) => `<tr><td class="say">${say}</td><td>${what}</td></tr>`;
   openDialog(`<div class="dlg-body vhelp"><h2>音声入力の話し方</h2>
+    <div class="vhtips"><b>聞き取られやすいコツ</b>　7は「<b>なな</b>」・4は「<b>よん</b>」（「しち」「し」は1や別の言葉になりやすい）／近心・中央・遠心は「<b>まえ</b>・<b>なか</b>・<b>おく</b>」でも言えます（例「右上6 おく 5」「7 まえ おく」）</div>
     <div class="vhcols"><section><h3>🎤 ポケット</h3><table>
       ${row('「3、3、4」', '今の場所から順に入れて進む')}
       ${row('「4 プラス」', '入れた部位に出血。「排膿」「マイナス」（出血なし）も')}
@@ -1999,8 +2056,9 @@ function showVoiceHelp() {
       <span><b>ポッ</b>次の歯に移った（出血：歯が入った）</span>
       <span><b>チャイム</b>エリアの区切り。<u>声の案内が終わってから</u>続きを話す</span>
       <span><b>ブー</b>入らなかった。案内のとおり言い直す</span>
+      <span><b>ピピッ</b>深い値（9以上・前回より3以上深い）。入れたので、橙の所を確かめる</span>
       <span><b class="ok">● どうぞ</b>聞いています</span><span><b class="ng">🔈 待って</b>案内中（話しても入りません）</span></div>
-    <p class="sub">続けて話してかまいません。黙ったとき（初期1秒）・エリアの区切り・部位を指定して入れたときに、そこまでを確定します。声の案内（「次、左上頬側」など）が流れている間は「待って」になるので、終わってから話してください。音（ポッ・チャイム）の間は話し続けて大丈夫です。</p>
+    <p class="sub">声で入った所は少しのあいだ青く光ります。聞き間違いに気づいたら、帯の「✕ 違う」を押すと聞き取りの記録に × が付きます（直すときは「取り消し」）。続けて話してかまいません。黙ったとき（初期1秒）・エリアの区切り・部位を指定して入れたときに、そこまでを確定します。声の案内（「次、左上頬側」など）が流れている間は「待って」になるので、終わってから話してください。音（ポッ・チャイム）の間は話し続けて大丈夫です。</p>
     <div class="dlg-actions"><div class="grow"></div><button class="btn primary" data-close>閉じる</button></div></div>`, true);
 }
 
@@ -2010,6 +2068,8 @@ const SPEECH_FIX = [
   [/みぎうえ|右へ|右え|みぎえ|右手|UA(?![a-zA-Z])/g, '右上'], [/ひだりうえ|左へ|左え|ひだりえ|左手|ひな上|ひなうえ/g, '左上'], [/依頼し?た/g, '左下'], [/みぎした/g, '右下'], [/ひだりした|ひな下|ひなした/g, '左下'],
   [/([1-8])0,000/g, '$1万'], [/([1-8])\s*万/g, '$1番'], // 「7番 遠心」→「7万円新」「70,000」：数字のあとの「万」は「番」
   [/1\s*日/g, '1 1'], // 「1 1 1」→「1日1」「1 1日」
+  // 近心・遠心・中央の言いかえ（聞き取りやすい日常の言葉）：まえ＝近心、なか＝中央、おく＝遠心。「7 おく」は「7億」と聞こえることがある
+  [/てまえ|手前|まえ|マエ|前(?!部)/g, '近心'], [/おく|オク|奥|億/g, '遠心'], [/なか|ナカ|中(?![央王応を])/g, '中央'],
   // 部位の言葉の聞き間違い。「聞き取りの記録」で見つかったものを元に、音の組み合わせで読み替える
   [/(右上|左上|右下|左下)?\s*([1-8])?\s*([5五後高口公校甲工交好向広])?\s*倍速/g, (m, q, d, pre) => (q ? `${q}${d || ''} 口蓋側` : `${pre && d ? d : ''} 口蓋側`)],
   [/(右上|左上|右下|左下)?\s*([1-8])?\s*([5五後高口公校甲工交好向広])?\s*階/g, (m, q, d, pre) => (!pre && d !== '5' ? m : q ? `${q}${d || ''} 口蓋側` : `${pre && d ? d : ''} 口蓋側`)], // 「5階」＝口蓋側
@@ -3046,7 +3106,23 @@ async function importBackup(file) {
     }
   }
   if (!settings.clinicName && data.settings && data.settings.clinicName) { settings.clinicName = data.settings.clinicName; await saveSettings(); }
-  await notify(`読み込みました（患者 ${np}件・検査 ${ne}件を追加・更新）`);
+  // 検査者と測る順番。この端末にまだ何もなければそのまま、あれば聞いてから（同じ人は置き換え、この端末にだけいる人は残す）
+  const ds = data.settings || {}, dsEx = Array.isArray(ds.examiners) ? ds.examiners : [];
+  let exNote = '';
+  if (dsEx.length || ds.orderSpec || ds.basicOrder) {
+    const empty = !(settings.examiners || []).length && !settings.orderSpec && !settings.basicOrder;
+    if (empty || await askConfirm(`バックアップの検査者（${dsEx.length}人）と測る順番も読み込みますか？\n同じ人は置き換え、この端末にだけいる人は残します。いつもの順番はバックアップのものになります。`, '読み込む')) {
+      const byId = new Map((settings.examiners || []).map((x) => [x.id, x]));
+      for (const x of dsEx) byId.set(x.id, x);
+      settings.examiners = [...byId.values()];
+      if (ds.orderSpec) settings.orderSpec = ds.orderSpec;
+      if (ds.basicOrder) settings.basicOrder = ds.basicOrder;
+      if (ds.order) settings.order = ds.order;
+      await saveSettings();
+      exNote = `・検査者${dsEx.length}人と測る順番`;
+    }
+  }
+  await notify(`読み込みました（患者 ${np}件・検査 ${ne}件を追加・更新${exNote}）`);
   showSettings();
 }
 

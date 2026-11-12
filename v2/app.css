@@ -320,6 +320,13 @@ dialog::backdrop { background: rgba(15, 23, 42, .35); }
 .chart td.p6 { background: var(--p6); color: var(--p6-ink); }
 .chart td.miss { background: repeating-linear-gradient(135deg, var(--miss) 0 4px, #f6f7f9 4px 8px); }
 .chart td.cur { box-shadow: inset 0 0 0 3px var(--cur); }
+/* 声で入った所（少しのあいだ）・確かめてほしい深い値 */
+.chart td.vnew { background: #bfdbfe; transition: background .4s; }
+.chart td.vchk { background: #fdba74; color: #7c2d12; box-shadow: inset 0 0 0 2px #ea580c; }
+.vhelp .vhtips { background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 10px; padding: 8px 12px; font-size: 14px; margin: 4px 0 10px; }
+.voicebar .vng { color: #b91c1c; border-color: #fca5a5; font-weight: 800; }
+.voicebar .tool.undo { white-space: nowrap; flex: none; }
+.voicebar .vrow { flex-wrap: wrap; row-gap: 4px; }
 /* 出血だけの音声で、今声で入れている列：薄い赤で塗り、上下に赤い太線 */
 .chart td.ctxrow { box-shadow: inset 0 0 0 999px rgba(239, 68, 68, .14), inset 0 4px 0 #dc2626, inset 0 -4px 0 #dc2626; }
 /* 前回から引き継いだ未確定の値 */
@@ -436,6 +443,8 @@ i.dif.dn { color: #2563eb; }
   .voicebar { padding: 4px 8px; font-size: 13px; min-height: 28px; }
   .voicebar .vctx, .voicebar .vwhere { font-size: 16px; }
   .voicebar .vwarn { font-size: 15px; }
+  .voicebar #vtest { display: none; }
+  .voicebar .tool.undo { min-height: 30px; padding: 0 9px; font-size: 13px; }
 }
 /* 縦：上は2段（名前・日付・検査者・⚙ ／ 音声・印刷・完了）、数字は6個ずつ2段 */
 @media (max-width: 600px) {
