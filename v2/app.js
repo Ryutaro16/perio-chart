@@ -256,7 +256,7 @@ function calcStats(ex) {
     boppct: ex.source !== 'paper' && present && (sites || bopAny) ? (bopAny / (present * ks.length)) * 100 : null,
     // プラークが1面でもあれば計算。0面のときは「付着なし」を押した場合だけ0%、それ以外は未検査（—）
     pcr: present && (pl > 0 || plaqueNone(ex)) ? (pl / (present * 4)) * 100 : null,
-    furT,
+    furT: ex.kind === 'basic' ? null : furT, // 基本検査は分岐部を測らない
   };
 }
 function statsHTML(s) {
@@ -2679,7 +2679,10 @@ const fmtTrend = (m, v) => (v == null ? '—' : m.pct ? `${Math.round(v)}%` : m.
 const SERIES = '#0d9488';
 // 前回からの変化。▼▲は向き、色は良し悪し（改善＝青、悪化＝橙）。文字は本文の色のまま
 function trendDelta(m, vals) {
-  const pts = vals.filter((p) => p.v != null);
+  // 今回（いちばん新しい検査）と同じ種類どうしで比べる。今回その項目を測っていなければ出さない
+  const now = vals[vals.length - 1];
+  if (!now || now.v == null) return '';
+  const pts = vals.filter((p) => p.v != null && (p.kind || '') === (now.kind || ''));
   if (pts.length < 2) return '';
   const a = pts[pts.length - 2].v, b = pts[pts.length - 1].v;
   const d = m.pct ? Math.round(b) - Math.round(a) : m.dec ? Math.round((b - a) * 10) / 10 : b - a;
@@ -2700,8 +2703,11 @@ function lineChartSVG(m, vals, opt = {}) {
   const x = (tm) => (t1 === t0 ? (L + W - R) / 2 : L + ((tm - t0) / (t1 - t0)) * (W - L - R));
   const y = (v) => T + (1 - v / max) * (H - T - B);
   const xy = pts.map((p, j) => [x(tms[j]), y(p.v)]);
-  const line = xy.map(([a, b], j) => `${j ? 'L' : 'M'}${a.toFixed(1)},${b.toFixed(1)}`).join('');
-  const area = xy.length > 1 ? `${line}L${xy[xy.length - 1][0].toFixed(1)},${y(0)}L${xy[0][0].toFixed(1)},${y(0)}Z` : '';
+  // 基本検査（1歯1点）と精密検査は数え方が違うので、線は種類ごとにつなぐ。精密＝実線・塗りの点、基本＝点線・白抜きの点
+  const kinds = [...new Set(pts.map((p) => p.kind))];
+  const lineOf = (k) => xy.filter((_, j) => pts[j].kind === k).map(([a, b], j) => `${j ? 'L' : 'M'}${a.toFixed(1)},${b.toFixed(1)}`).join('');
+  const line = kinds.length === 1 ? lineOf(kinds[0]) : '';
+  const area = line && xy.length > 1 ? `${line}L${xy[xy.length - 1][0].toFixed(1)},${y(0)}L${xy[0][0].toFixed(1)},${y(0)}Z` : '';
   const tl = (v) => (m.pct ? `${v}%` : Number.isInteger(v) ? v : v.toFixed(1));
   const dlab = (d) => d.slice(2).replace(/-/g, '/'); // 26/03/02
   const last = xy[xy.length - 1];
@@ -2710,19 +2716,26 @@ function lineChartSVG(m, vals, opt = {}) {
     ${ticks.map((v) => `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" class="tgrid"/><text x="${L - 6}" y="${y(v) + 3.5}" class="tax" text-anchor="end">${tl(v)}</text>`).join('')}
     ${xlabels.map(([xx, d], j) => `<text x="${xx}" y="${H - 6}" class="tax" text-anchor="${pts.length === 1 ? 'middle' : j ? 'end' : 'start'}">${dlab(d)}</text>`).join('')}
     ${area ? `<path d="${area}" fill="${SERIES}" fill-opacity="0.1"/>` : ''}
-    <path d="${line}" fill="none" stroke="${SERIES}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-    ${xy.map(([a, b]) => `<circle cx="${a}" cy="${b}" r="4" fill="${SERIES}" stroke="#fff" stroke-width="2"/>`).join('')}
-    ${opt.noHover ? '' : xy.map(([a, b], j) => `<circle cx="${a}" cy="${b}" r="16" fill="transparent" data-tip="${fmtDate(pts[j].date)}　${esc(m.label)} ${fmtTrend(m, pts[j].v)}"/>`).join('')}
+    ${kinds.map((k) => `<path d="${lineOf(k)}" fill="none" stroke="${SERIES}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"${k === 'basic' ? ' stroke-dasharray="5 4"' : ''}/>`).join('')}
+    ${xy.map(([a, b], j) => (pts[j].kind === 'basic'
+    ? `<circle cx="${a}" cy="${b}" r="4" fill="#fff" stroke="${SERIES}" stroke-width="2"/>`
+    : `<circle cx="${a}" cy="${b}" r="4" fill="${SERIES}" stroke="#fff" stroke-width="2"/>`)).join('')}
+    ${opt.noHover ? '' : xy.map(([a, b], j) => `<circle cx="${a}" cy="${b}" r="16" fill="transparent" data-tip="${fmtDate(pts[j].date)}　${pts[j].kind === 'basic' ? '基本検査' : '精密検査'}　${esc(m.label)} ${fmtTrend(m, pts[j].v)}"/>`).join('')}
   </svg>`;
 }
+const examKind = (e) => (isBasic(e) ? 'basic' : 'precise');
 function trendCardsHTML(liveAsc, opt = {}) {
-  const stats = liveAsc.map((e) => ({ date: e.date, s: calcStats(e) }));
+  const stats = liveAsc.map((e) => ({ date: e.date, kind: examKind(e), s: calcStats(e) }));
   return TRENDS.filter((m) => !opt.keys || opt.keys.includes(m.key)).map((m) => {
-    const vals = stats.map(({ date, s }) => ({ date, v: s[m.key] }));
-    const latest = [...vals].reverse().find((p) => p.v != null);
+    const vals = stats.map(({ date, kind, s }) => ({ date, kind, v: s[m.key] }));
+    const latest = vals[vals.length - 1]; // いちばん新しい検査の値（その検査で測っていなければ —）
+    const mixed = new Set(vals.map((p) => p.kind)).size > 1;
+    const mu = latest && latest.kind === 'basic' && m.unit === '部位' ? { ...m, unit: '歯' } : m; // 基本検査は歯で数える
+    const tag = latest && mixed ? `<small class="tkind">${latest.kind === 'basic' ? '基本' : '精密'}</small>` : '';
     return `<div class="tcard"><div class="ttitle">${esc(m.label)}</div>
-      <div class="tval">${latest ? fmtTrend(m, latest.v) : '—'}</div>${trendDelta(m, vals)}
-      ${lineChartSVG(m, vals, opt)}</div>`;
+      <div class="tval">${latest && latest.v != null ? fmtTrend(mu, latest.v) : '—'}${tag}</div>${latest && latest.v == null && latest.kind === 'basic' ? '<span class="tdelta">基本検査では測りません</span>' : trendDelta(m, vals)}
+      ${lineChartSVG(m, vals, opt)}
+      ${mixed ? '<div class="tlegend"><span><i class="lp"></i>精密検査</span><span><i class="lb"></i>基本検査（1歯1点）</span></div>' : ''}</div>`;
   }).join('');
 }
 // グラフの点に触れると、日付と値を出す
@@ -2768,10 +2781,11 @@ async function printExam(p, ex) {
 }
 // 患者さん説明用（A4縦）：前回との比較表・推移グラフ・前回との差つきのチャート・コメント欄
 function trendSheetHTML(p, liveAsc) {
-  const cur = liveAsc[liveAsc.length - 1], prev = liveAsc.length > 1 ? liveAsc[liveAsc.length - 2] : null;
+  const cur = liveAsc[liveAsc.length - 1];
+  const prev = [...liveAsc.slice(0, -1)].reverse().find((e) => examKind(e) === examKind(cur)) || null; // 前回は同じ種類の検査
   const sc = calcStats(cur), sp = prev ? calcStats(prev) : null;
   const rows = TRENDS.map((m) => {
-    const vals = liveAsc.map((e) => ({ date: e.date, v: calcStats(e)[m.key] }));
+    const vals = liveAsc.map((e) => ({ date: e.date, kind: examKind(e), v: calcStats(e)[m.key] }));
     return `<tr><th>${esc(m.label)}</th><td>${sp ? fmtTrend(m, sp[m.key]) : '—'}</td><td class="now">${fmtTrend(m, sc[m.key])}</td><td>${trendDelta(m, vals) || '—'}</td><td class="desc">${esc(m.desc)}</td></tr>`;
   }).join('');
   const dc = diffCounts(cur, prev);

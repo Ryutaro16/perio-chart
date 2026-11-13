@@ -377,6 +377,11 @@ i.dif.dn { color: #2563eb; }
 .ic.bad { color: #c2410c; }
 .ic.same { color: var(--sub); }
 .tsvg { width: 100%; height: auto; display: block; margin-top: 6px; }
+.tval .tkind { font-size: 11px; font-weight: 700; color: var(--sub); background: #eef2f6; border-radius: 6px; padding: 1px 6px; margin-left: 6px; vertical-align: middle; }
+.tlegend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px; color: var(--sub); margin-top: 2px; }
+.tlegend span { display: inline-flex; align-items: center; gap: 4px; }
+.tlegend i { width: 9px; height: 9px; border-radius: 50%; border: 2px solid #0d9488; display: inline-block; }
+.tlegend i.lp { background: #0d9488; } .tlegend i.lb { background: #fff; }
 .tsvg .tgrid { stroke: #e6e9ee; stroke-width: 1; }
 .tsvg .tax { font-size: 10px; fill: #7a8594; }
 .tempty { color: var(--sub); font-size: 13px; margin: 18px 0; }
