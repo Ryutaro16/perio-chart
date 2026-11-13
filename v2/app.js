@@ -307,6 +307,9 @@ async function findPrevExam(ex, sameKind = false) {
   return list[0] || null;
 }
 
+const examKind = (e) => (isBasic(e) ? 'basic' : 'precise');
+const unitOf = (e) => (isBasic(e) ? '歯' : '部位'); // 基本検査は歯で数える
+const prevSameKind = (list, i) => list.slice(i + 1).find((x) => examKind(x) === examKind(list[i])) || null; // 新しい順の一覧で、同じ種類の前回
 function chartHTML(exam, o = {}) {
   const T = exam.teeth;
   // 引き継いだ値の薄い表示は画面だけ。印刷（o.print）では通常の濃さにする
@@ -368,6 +371,7 @@ function chartHTML(exam, o = {}) {
       const v = th.ppd.x;
       if (v >= 6) c.push('p6'); else if (v >= 4) c.push('p4');
       if (o.cursor && o.cursor.t === t) c.push('cur');
+      if (o.ctx && quad(t) === o.ctx.q) c.push('ctxrow'); // 音声の出血モードで今入れているブロック
       if (carried('ppd', t, 'x')) c.push('c');
       const dot = (type) => (th[type].x ? `<i class="${type}${carried(type, t, 'x') ? ' c' : ''}"></i>` : '');
       let dif = '';
@@ -493,7 +497,7 @@ async function showList() {
     $('#plist').innerHTML = rows.length
       ? rows.map((p) => {
         const i = info[p.id] || { n: 0, last: '' };
-        return `<button class="prow" data-pid="${p.id}"><span class="avatar" aria-hidden="true">${esc((p.name || '？').trim().charAt(0))}</span>
+        return `<button class="prow" data-pid="${esc(p.id)}"><span class="avatar" aria-hidden="true">${esc((p.name || '？').trim().charAt(0))}</span>
           <span class="pname">${esc(p.name)}<small>${p.chartNo ? `No.${esc(p.chartNo)}　` : ''}${esc(p.kana || '')}</small></span>
           ${i.n ? `<span class="pkeys">${i.keys}</span>` : ''}
           <span class="pmeta">${i.n ? `${fmtDate(i.last)}<small>検査 全${i.n}回</small>` : '<small>検査なし</small>'}</span><span class="chev">›</span></button>`;
@@ -555,7 +559,7 @@ function historyCardHTML(e, prev) {
   return `<section class="hcard">
     <div class="hhead"><b>${fmtDate(e.date)}</b>${isBasic(e) ? '<span class="kindtag">基本検査</span>' : ''}${e.examiner ? `<span class="sub">検査者：${esc(e.examiner)}</span>` : ''}
       ${!prev ? '<span class="sub">初回の検査</span>' : dc.other ? `<span class="sub">前回 ${fmtDate(prev.date)} は${kindName(prev)}（測り方が違うので差は出しません）</span>` : `<span class="sub">前回 ${fmtDate(prev.date)} との差：<i class="dif dn">−</i>改善 ${dc.better}${isBasic(e) ? '歯' : '部位'}　<i class="dif up">+</i>悪化 ${dc.worse}${isBasic(e) ? '歯' : '部位'}</span>`}
-      <div class="grow"></div><button class="btn" data-open="${e.id}">開く</button><button class="btn" data-print="${e.id}">印刷</button></div>
+      <div class="grow"></div><button class="btn" data-open="${esc(e.id)}">開く</button><button class="btn" data-print="${esc(e.id)}">印刷</button></div>
     <div class="hchart" data-hx="${e.id}">${chartHTML(e, { prev, mini: true })}</div><p class="sub hzoomhint">チャートを押すと、大きくして見られます（指で拡大）</p>
     <div class="hstats">
       ${s.basic ? '' : `<span>PCR <b>${fmtPct(s.pcr)}</b></span>`}<span>BOP <b>${fmtPct(s.boppct)}</b></span>
@@ -648,7 +652,7 @@ async function showPatient(pid, showDeleted = false) {
       <td class="ex">${e.examiner ? `<span>検査者：</span>${esc(e.examiner)}` : ''}</td>
       <td class="acts">${showDeleted
         ? `<button class="btn" data-restore="${e.id}">元に戻す</button>`
-        : `<button class="btn primary" data-open="${e.id}">開く</button><button class="btn" data-print="${e.id}">印刷</button><button class="btn danger" data-del="${e.id}">削除</button>`}</td></tr>`;
+        : `<button class="btn primary" data-open="${esc(e.id)}">開く</button><button class="btn" data-print="${esc(e.id)}">印刷</button><button class="btn danger" data-del="${esc(e.id)}">削除</button>`}</td></tr>`;
   }).join('');
   app().innerHTML = `
     <header class="bar"><button class="btn ghost" data-go="list">‹ 患者一覧</button><div class="grow"></div>${gearBtn()}<button class="btn" id="editp">患者情報を編集</button></header>
@@ -667,7 +671,7 @@ async function showPatient(pid, showDeleted = false) {
           <div class="segtabs"><button class="seg${patientTab === 'chart' ? ' on' : ''}" data-ptab="chart">チャート</button><button class="seg${patientTab === 'graph' ? ' on' : ''}" data-ptab="graph">グラフ</button></div>
           <div class="grow"></div><button class="btn" id="prtTrend">経過を印刷（患者さん用）</button></div>
         ${patientTab === 'chart'
-          ? `<div class="hist">${live.map((e, i) => historyCardHTML(e, live[i + 1] || null)).join('')}</div>`
+          ? `<div class="hist">${live.map((e, i) => historyCardHTML(e, prevSameKind(live, i))).join('')}</div>`
           : `<div class="tgrid-cards">${trendCardsHTML([...live].reverse())}</div>${live.length < 2 ? '<p class="sub">2回目の検査から、推移と前回からの変化が出ます。</p>' : ''}`}` : ''}
     </main>`;
   $('#editp').onclick = () => patientDialog(p, () => showPatient(pid));
@@ -679,7 +683,7 @@ async function showPatient(pid, showDeleted = false) {
     const hx = e.target.closest('[data-hx]');
     if (hx && isPhone()) {
       const i = live.findIndex((x) => x.id === hx.dataset.hx);
-      if (i >= 0) openChartViewer(chartHTML(live[i], { prev: live[i + 1] || null, mini: true }), fmtDate(live[i].date));
+      if (i >= 0) openChartViewer(chartHTML(live[i], { prev: prevSameKind(live, i), mini: true }), fmtDate(live[i].date));
       return;
     }
     const b = e.target.closest('button');
@@ -835,7 +839,8 @@ async function openEditor(examId) {
   };
   $('#chart').onclick = onChartTap;
   $('#pad').onclick = onPadTap;
-  loadZoom(); zm.smooth = false;
+  loadZoom(); zm.smooth = false; zm.touching = false;
+  voice.marks = null; // 前の検査で光らせた印を持ち越さない
   setupChartZoom();
   refresh();
   zm.smooth = true;
@@ -899,7 +904,7 @@ function refresh() {
     b.classList.toggle('on', ed.showDiff);
     if (ed.showDiff) {
       const dc = diffCounts(ed.exam, ed.prev);
-      diffNote = `<span class="difnote">前回（${fmtDate(ed.prev.date)}）比・${DIFF_MIN}mm以上：<i class="dif dn">−</i>改善 <b>${dc.better}</b>部位　<i class="dif up">+</i>悪化 <b>${dc.worse}</b>部位</span>`;
+      diffNote = `<span class="difnote">前回（${fmtDate(ed.prev.date)}）比・${DIFF_MIN}mm以上：<i class="dif dn">−</i>改善 <b>${dc.better}</b>${unitOf(ed.exam)}　<i class="dif up">+</i>悪化 <b>${dc.worse}</b>${unitOf(ed.exam)}</span>`;
     }
   }
   $('#stats').innerHTML = statsHTML(calcStats(ed.exam)) + diffNote;
@@ -978,8 +983,11 @@ function setupChartZoom() {
   const dist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
   const mid = (t) => { const r = vp.getBoundingClientRect(); return [(t[0].clientX + t[1].clientX) / 2 - r.left, (t[0].clientY + t[1].clientY) / 2 - r.top]; };
   vp.addEventListener('touchstart', (e) => {
-    zm.touching = true;
+    zm.touching = true; zm.touchAt = Date.now();
     if (e.touches.length === 2) pinch = { d: dist(e.touches), z: zm.z };
+    // 触っていたマスが描き直しで消えると、指を離した合図が枠まで届かない。マス自身にも付けて取りこぼさない
+    e.target.addEventListener('touchend', end, { once: true });
+    e.target.addEventListener('touchcancel', end, { once: true });
   }, { passive: true });
   vp.addEventListener('touchmove', (e) => {
     if (!pinch || e.touches.length !== 2) return;
@@ -988,10 +996,10 @@ function setupChartZoom() {
     zm.area = false;
     setZoom(pinch.z * dist(e.touches) / pinch.d, cx, cy);
   }, { passive: false });
-  const end = (e) => {
+  function end(e) {
     if (pinch && e.touches.length < 2) { pinch = null; saveZoom(); }
     if (!e.touches.length) zm.touching = false;
-  };
+  }
   vp.addEventListener('touchend', end); vp.addEventListener('touchcancel', end);
   // Macのトラックパッドのピンチ（ctrl＋ホイール）でも
   vp.addEventListener('wheel', (e) => {
@@ -1008,7 +1016,7 @@ function followCursor(again) {
   const vp = $('#chartvp'), ch = $('#chart');
   if (!vp || !ch || view.name !== 'editor') return;
   layoutZoom();
-  if (zm.touching) return;
+  if (zm.touching && Date.now() - (zm.touchAt || 0) < 8000) return; // 指で動かしている間は動かさない（合図を取りこぼしても8秒で戻る）
   const cells = [...ch.querySelectorAll('td.cur')];
   if (!cells.length) cells.push(...ch.querySelectorAll('td.ctxrow'));
   if (!cells.length) return;
@@ -1077,8 +1085,8 @@ function padHTML() {
     const n = ALL.reduce((a, t) => a + (T[t].missing ? 0 : examSites(ed.exam).filter((k) => T[t].bop[k]).length), 0);
     const voiceBop = voice.on && voice.mode === 'bop' && voice.ctx;
     body = `<div class="pad-status">${flashHTML()}${voiceBop
-      ? `<span>いま出血 <strong>${n}</strong>部位。下の地図を押すと、声で入れる列を切り替えられます</span>`
-      : `<span>チャートのポケットの欄を<strong>タップすると出血</strong>が付きます。もう一度タップで外れます</span><span class="tip">いま出血 ${n}部位。声で入れるときは上の「🎤 出血」</span>`}
+      ? `<span>いま出血 <strong>${n}</strong>${unitOf(ed.exam)}。下の地図を押すと、声で入れる列を切り替えられます</span>`
+      : `<span>チャートのポケットの欄を<strong>タップすると出血</strong>が付きます。もう一度タップで外れます</span><span class="tip">いま出血 ${n}${unitOf(ed.exam)}。声で入れるときは上の「🎤 出血」</span>`}
         <button class="tool undo bopclear" data-act="bopclear">出血の記録をすべて消す</button></div>
       ${voice.on && voice.mode === 'bop' && voice.ctx ? areaMapHTML(voice.ctx) : ''}`;
   } else if (ed.mode === 'mob') {
@@ -1169,7 +1177,7 @@ function fillEmptyPPD() {
   }
   if (!filled.length) { ed.flash = '空欄はありません'; return; }
   ed.undo = { kind: 'ppd', filled };
-  ed.flash = `空欄 ${filled.length}部位に${ed.bulkVal}を入れました。深い部位をタップして直してください`;
+  ed.flash = `空欄 ${filled.length}${unitOf(ed.exam)}に${ed.bulkVal}を入れました。深い所をタップして直してください`;
 }
 function applyPlaque(on) {
   const T = ed.exam.teeth;
@@ -1452,7 +1460,7 @@ function voiceInterim(text) {
 }
 function voiceFinal(text) {
   clearTimeout(voice.timer); voice.timer = null;
-  if (voice.discard) { voice.discard = false; voice.interim = ''; return; } // フットスイッチで取り消した文
+  if (voice.discard) { voice.discard = false; voice.interim = ''; voice.ngNext = false; return; } // フットスイッチで取り消した文
   const startIdx = voice.prov ? voice.prov.cur : ed.cur; // 話し始めたときのカーソル
   if (voice.prov && sameSpeech(voice.prov.text, text) && !CMD_RE.test(text)) { // 仮入力のまま確定
     const g = voice.prov.guide, quiet = /秒の間/.test(voice.cutReason || '');
@@ -1478,7 +1486,7 @@ function addVoiceLog(text, startIdx) {
   const info = diagText(voice.diag, voice.cutReason);
   voice.diag = null; voice.cutReason = ''; voice.pend = '';
   voice.log.unshift({ id: uid(), time: new Date().toLocaleString('ja-JP'), start: s ? siteName(s.t, s.k) : '', raw: text, result: voice.lastResult || '', ok: voice.ngNext ? false : null, correct: '', info });
-  voice.ngNext = false;
+  voice.ngNext = false; voice.chkSeen = null;
   voice.log.length = Math.min(voice.log.length, VOICE_LOG_MAX);
   saveVoiceLog();
 }
@@ -1504,17 +1512,23 @@ function markVoiceOps(ops) {
     if (o.field === 'ppd') {
       const v = T[o.t].ppd[o.k], pt = ed.prev && ed.prev.teeth[o.t];
       const pv = pt && !pt.missing && isBasic(ed.prev) === isBasic(ed.exam) ? pt.ppd[o.k] : null;
-      if (v != null && (v >= VCHK_MIN || (pv != null && v - pv >= VCHK_JUMP))) { kind = 'vchk'; chk.push(`${o.k === 'x' ? toothName(o.t) : siteName(o.t, o.k)} ${v}`); }
+      if (v != null && (v >= VCHK_MIN || (pv != null && v - pv >= VCHK_JUMP))) { kind = 'vchk'; chk.push({ id: `${o.t}:${o.k}:${v}`, text: `${o.k === 'x' ? toothName(o.t) : siteName(o.t, o.k)} ${v}` }); }
     }
-    voice.marks.set(`${o.t}:${o.k}`, { kind, until: now + (kind === 'vchk' ? VCHK_MS : VMARK_MS) });
+    const key = `${o.t}:${o.k}`, old = voice.marks.get(key);
+    if (old && old.kind === kind) continue; // 話している間に同じ文が何度も届いても、光る時間は延ばさない
+    voice.marks.set(key, { kind, until: now + (kind === 'vchk' ? VCHK_MS : VMARK_MS) });
   }
   paintMarks();
   clearTimeout(voice.markTimer);
   voice.markTimer = setTimeout(expireMarks, VMARK_MS + 50);
   if (chk.length) {
-    voice.warn = [voice.warn, `確かめて：${chk.join('、')}（入れました）`].filter(Boolean).join('／');
+    voice.warn = [voice.warn, `確かめて：${chk.map((c) => c.text).join('、')}（入れました）`].filter(Boolean).join('／');
     renderVoice();
-    if (guideOn('enabled')) playTone('chk');
+    // ピピッは、その文で初めて出た値だけ（続けて話すと同じ文が何度も届くため）。文が確定したら忘れる
+    voice.chkSeen ||= new Set();
+    const fresh = chk.filter((c) => !voice.chkSeen.has(c.id));
+    fresh.forEach((c) => voice.chkSeen.add(c.id));
+    if (fresh.length && guideOn('enabled')) playTone('chk');
   }
 }
 function expireMarks() {
@@ -1859,6 +1873,7 @@ function failSpeech(w) {
   let m;
   if ((m = w.match(/^(.+?)の部位が聞き取れません/))) return `${num(m[1])}番、部位をもう一度`;
   if ((m = w.match(/聞き取れない言葉がありました。(\S+) (\S+)から/))) return `${num(m[1])}番 ${m[2]}から、もう一度`;
+  if ((m = w.match(/聞き取れない言葉がありました。(\S+)\s+から/))) return `${num(m[1])}番から、もう一度`; // 基本検査（部位なし）
   if ((m = w.match(/^(.+?)は欠損です/))) return `${num(m[1])}番は欠損です`;
   if (/歯の番号が聞き取れません|番の歯はありません/.test(w)) return '番号をもう一度';
   if (/歯の名前が聞き取れません/.test(w)) return '歯の名前をもう一度';
@@ -2025,7 +2040,7 @@ function renderVoice() {
   $('#vlog').onclick = showVoiceLog;
   $('#vtest').onclick = showVoiceTest;
   $('#vhelp').onclick = showVoiceHelp;
-  $('#vng').onclick = markLastVoiceNG;
+  $('#vng').onpointerdown = (e) => { e.preventDefault(); markLastVoiceNG(); }; // 話している間は帯が描き直されるので、押した瞬間に
 }
 // 話し方の早見表（言い方と、音の意味）
 function showVoiceHelp() {
@@ -2069,6 +2084,7 @@ const SPEECH_FIX = [
   [/([1-8])0,000/g, '$1万'], [/([1-8])\s*万/g, '$1番'], // 「7番 遠心」→「7万円新」「70,000」：数字のあとの「万」は「番」
   [/1\s*日/g, '1 1'], // 「1 1 1」→「1日1」「1 1日」
   // 近心・遠心・中央の言いかえ（聞き取りやすい日常の言葉）：まえ＝近心、なか＝中央、おく＝遠心。「7 おく」は「7億」と聞こえることがある
+  [/真ん中|まんなか|まん中|マンナカ/g, '中央'], // 「なか」より先に（「まん中央」にならないように）
   [/てまえ|手前|まえ|マエ|前(?!部)/g, '近心'], [/おく|オク|奥|億/g, '遠心'], [/なか|ナカ|中(?![央王応を])/g, '中央'],
   // 部位の言葉の聞き間違い。「聞き取りの記録」で見つかったものを元に、音の組み合わせで読み替える
   [/(右上|左上|右下|左下)?\s*([1-8])?\s*([5五後高口公校甲工交好向広])?\s*倍速/g, (m, q, d, pre) => (q ? `${q}${d || ''} 口蓋側` : `${pre && d ? d : ''} 口蓋側`)],
@@ -2723,7 +2739,7 @@ function lineChartSVG(m, vals, opt = {}) {
     ${opt.noHover ? '' : xy.map(([a, b], j) => `<circle cx="${a}" cy="${b}" r="16" fill="transparent" data-tip="${fmtDate(pts[j].date)}　${pts[j].kind === 'basic' ? '基本検査' : '精密検査'}　${esc(m.label)} ${fmtTrend(m, pts[j].v)}"/>`).join('')}
   </svg>`;
 }
-const examKind = (e) => (isBasic(e) ? 'basic' : 'precise');
+
 function trendCardsHTML(liveAsc, opt = {}) {
   const stats = liveAsc.map((e) => ({ date: e.date, kind: examKind(e), s: calcStats(e) }));
   return TRENDS.filter((m) => !opt.keys || opt.keys.includes(m.key)).map((m) => {
@@ -2793,7 +2809,7 @@ function trendSheetHTML(p, liveAsc) {
     <div class="ts-who"><b>${esc(p.name)}</b> 様　　今回の検査：${fmtDate(cur.date)}${prev ? `　　前回：${fmtDate(prev.date)}` : ''}　　検査の回数：${liveAsc.length}回</div>
     <table class="ts-table"><thead><tr><th>項目</th><th>前回</th><th>今回</th><th>変化</th><th>見かた</th></tr></thead><tbody>${rows}</tbody></table>
     ${liveAsc.length > 1 ? `<div class="ts-charts">${trendCardsHTML(liveAsc, { keys: ['boppct', 'ge4pct', 'pcr', 'mean'], noHover: true, w: 240, h: 120 })}</div>` : ''}
-    <div class="ts-sub">今回のチャート${prev && !dc.other ? `（前回より${DIFF_MIN}mm以上変わった部位に印：<i class="dif dn">−</i>浅くなった ${dc.better}部位／<i class="dif up">+</i>深くなった ${dc.worse}部位）` : ''}</div>
+    <div class="ts-sub">今回のチャート${prev && !dc.other ? `（前回より${DIFF_MIN}mm以上変わった${isBasic(cur) ? '歯' : '部位'}に印：<i class="dif dn">−</i>浅くなった ${dc.better}${unitOf(cur)}／<i class="dif up">+</i>深くなった ${dc.worse}${unitOf(cur)}）` : ''}</div>
     ${chartHTML(cur, { print: true, prev })}
     <div class="ts-comment"><div>担当者より</div></div>`;
 }
@@ -3016,7 +3032,7 @@ async function showSettings() {
         <h3 class="exh">検査する人（ドクター・衛生士）</h3>
         ${(settings.examiners || []).map((x) => `<div class="exrow"><div class="exname">${esc(x.name)}</div>
           <div class="exord"><span>精密：${x.order ? esc(orderSummary(x.order)) : 'いつもの順番'}</span><span>基本：${x.order || x.basicOrder ? esc(basicSummary(x.basicOrder)) : 'いつもの順番'}</span></div>
-          <button class="btn" data-ord="${x.id}">変える</button><button class="btn danger" data-exdel="${x.id}">削除</button></div>`).join('') || '<p class="sub">まだ登録していません。</p>'}
+          <button class="btn" data-ord="${esc(x.id)}">変える</button><button class="btn danger" data-exdel="${esc(x.id)}">削除</button></div>`).join('') || '<p class="sub">まだ登録していません。</p>'}
         <button class="btn" data-ord="new">＋ 人を追加</button>
         <p class="hint">名前と順番は、この端末の中にだけ保存します（バックアップには入ります）。</p></section>
       <section class="card"><h2>バックアップ</h2>
@@ -3108,6 +3124,8 @@ async function importBackup(file) {
   let data;
   try { data = JSON.parse(await file.text()); } catch { await notify('ファイルを読み込めませんでした。'); return; }
   if (!data || data.app !== 'perio-chart') { await notify('このアプリのバックアップファイルではありません。'); return; }
+  data.patients = Array.isArray(data.patients) ? data.patients : [];
+  data.exams = Array.isArray(data.exams) ? data.exams : [];
   if (!(await askConfirm(`患者 ${data.patients.length}名・検査 ${data.exams.length}件 を読み込みます。\n今あるデータは消えず、同じ記録は新しいほうが残ります。`, '読み込む'))) return;
   let np = 0, ne = 0;
   for (const [store, rows] of [['patients', data.patients], ['exams', data.exams]]) {
@@ -3123,14 +3141,18 @@ async function importBackup(file) {
   // 検査者と測る順番。この端末にまだ何もなければそのまま、あれば聞いてから（同じ人は置き換え、この端末にだけいる人は残す）
   const ds = data.settings || {}, dsEx = Array.isArray(ds.examiners) ? ds.examiners : [];
   let exNote = '';
-  if (dsEx.length || ds.orderSpec || ds.basicOrder) {
+  if (dsEx.length || 'orderSpec' in ds || 'basicOrder' in ds) {
     const empty = !(settings.examiners || []).length && !settings.orderSpec && !settings.basicOrder;
     if (empty || await askConfirm(`バックアップの検査者（${dsEx.length}人）と測る順番も読み込みますか？\n同じ人は置き換え、この端末にだけいる人は残します。いつもの順番はバックアップのものになります。`, '読み込む')) {
-      const byId = new Map((settings.examiners || []).map((x) => [x.id, x]));
-      for (const x of dsEx) byId.set(x.id, x);
-      settings.examiners = [...byId.values()];
-      if (ds.orderSpec) settings.orderSpec = ds.orderSpec;
-      if (ds.basicOrder) settings.basicOrder = ds.basicOrder;
+      // 同じ id か同じ名前の人は、バックアップのほうで置き換える（端末ごとに同じ名前で登録していても2人にならない）
+      const list = [...(settings.examiners || [])];
+      for (const x of dsEx) {
+        const i = list.findIndex((y) => y.id === x.id || (y.name || '').trim() === (x.name || '').trim());
+        if (i >= 0) list[i] = x; else list.push(x);
+      }
+      settings.examiners = list;
+      if ('orderSpec' in ds) settings.orderSpec = ds.orderSpec ?? null;
+      if ('basicOrder' in ds) settings.basicOrder = ds.basicOrder ?? null;
       if (ds.order) settings.order = ds.order;
       await saveSettings();
       exNote = `・検査者${dsEx.length}人と測る順番`;
@@ -3273,16 +3295,27 @@ async function paperReadAI(d) {
   const pass = await aiPass();
   if (!pass) { await notify('AIで読み取るには、設定画面の「紙の取り込み：AIで読み取る」で合言葉を一度入れてください。'); return; }
   const filled = d.exams.some((e) => Object.values(e.teeth).some((t) => t.st !== 'ok' || t.mob != null || [...t.b, ...t.l].some((v) => v != null)));
-  if (filled && !(await askConfirm('今の表の数字は、AIが読み取った数字に置き換わります。よろしいですか？', 'AIで読み取る'))) return;
-  openDialog(`<div class="dlg-body"><div class="spin"></div><p class="dlg-msg" style="text-align:center">AIが写真を読み取っています…<br><small class="sub">1〜2分ほどかかります。この画面のままお待ちください</small></p></div>`);
+  // 送る前に毎回確かめる：写真が外部のAIに届くこと・費用・氏名が写っていないか（表に数字があれば置き換わることも）
+  if (!(await askConfirm(`写真を外部のAI（中継サーバー経由）に送って、数字を読み取ります。1枚 約10〜30円（推定）。\n紙に患者さんの氏名が写っていないか確かめてください。${filled ? '\n今の表の数字は、読み取った数字に置き換わります。' : ''}`, '送って読み取る'))) return;
+  const ctl = new AbortController();
+  let stopped = false;
+  const timer = setTimeout(() => ctl.abort(), 180000); // 3分で時間切れ
+  openDialog(`<div class="dlg-body"><div class="spin"></div><p class="dlg-msg" style="text-align:center">AIが写真を読み取っています…<br><small class="sub">1〜2分ほどかかります。この画面のままお待ちください</small></p>
+    <div class="dlg-actions"><div class="grow"></div><button class="btn" id="aiStop">中止</button><div class="grow"></div></div></div>`);
   const dlg = $('#dlg');
-  dlg.oncancel = (e) => e.preventDefault(); // 読み取り中は閉じない
+  dlg.oncancel = (e) => e.preventDefault(); // 読み取り中は、中止ボタン以外では閉じない
+  $('#aiStop').onclick = () => { stopped = true; ctl.abort(); };
   let r, err;
   try {
-    const res = await fetch(`${AI_API}/api/perio-read`, { method: 'POST', headers: { 'Content-Type': d.photo.type || 'image/jpeg', 'X-Passphrase': pass, 'X-Device': encodeURIComponent('ペリオ') }, body: d.photo });
+    const res = await fetch(`${AI_API}/api/perio-read`, { method: 'POST', headers: { 'Content-Type': d.photo.type || 'image/jpeg', 'X-Passphrase': pass, 'X-Device': encodeURIComponent('ペリオ') }, body: d.photo, signal: ctl.signal });
     r = await res.json().catch(() => ({}));
     if (!res.ok) err = r.error || `読み取れませんでした（${res.status}）`;
-  } catch { err = 'サーバーにつながりませんでした。インターネットの接続を確かめてください。'; }
+  } catch (e) {
+    err = stopped ? '読み取りを中止しました。'
+      : e && e.name === 'AbortError' ? '3分たっても返事がないので、読み取りを止めました。少し待ってから、もう一度お試しください。'
+        : 'サーバーにつながりませんでした。インターネットの接続を確かめてください。';
+  }
+  clearTimeout(timer);
   dlg.oncancel = null;
   closeDialog();
   if (err) { await notify(err); return; }
