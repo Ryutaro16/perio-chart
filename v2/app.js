@@ -2905,15 +2905,19 @@ function stripSheetHTML(p, ex) {
 }
 // 横150mm×縦94mm の紙（手で切った紙）に刷る：枠を「ポストカード（100×148mm）1枚分の画像」にして、共有→プリントで刷る。
 // Safari の印刷は上下に約13mm の余白（URL・ページ番号）を取り、150mm の枠が入らないため（2026-11-14 iPhone で2ページに分かれた）。
-// 紙は短い辺から入れる。枠は90度回して、紙の長い辺いっぱい（画像の端から1mm）に置く。プリンターは画像を紙の刷れる範囲に縮めて刷るので、枠は約95%になる見込み。
+// 紙は短い辺から入れる。枠は90度回して、紙の長い辺に沿わせる。プリンターは画像を紙の刷れる範囲に縮めて刷る（フチなしでなければ端に余白が残る）。
 // 紙を横長に持って読むとき：左＝先に入る辺、上＝画像の右。上下の位置は settings.stripOff.c（mm、＋で上へ）
 const CARD = { w: 100, h: 148, pxmm: 12 };
 const stripOff = () => ({ c: 0, ...(settings.stripOff || {}) });
+// 画像は枠と日付だけの細長い形にする（2026-11-14：100×148mm の画像だと、プリンターが幅に合わせて縮め、枠が長さ約130mm になった）。
+// 細長いと、プリンターは長さに合わせて縮めるので、枠が紙の長さいっぱい近くまで大きくなる。プリンターは画像を紙の真ん中に置く
+function cardSize() {
+  const off = stripOff(), PH = CARD.h, L = PH - 2, k = L / STRIP.w, Hs = STRIP.h * k, dateH = 6, blockH = dateH + Hs;
+  return { PH, L, k, Hs, dateH, blockH, PW: blockH + 4 + 2 * Math.abs(off.c), off };
+}
 function cardPageSVG(p, ex) {
-  const { w: PW, h: PH } = CARD, off = stripOff();
-  const L = PH - 2, k = L / STRIP.w, Hs = STRIP.h * k; // 枠は画像の長い辺いっぱい
-  const dateH = 6, blockH = dateH + Hs;
-  const X0 = (PW - blockH) / 2 + off.c; // 紙の幅の真ん中に置く
+  const { PH, PW, L, Hs, dateH, blockH, off } = cardSize();
+  const X0 = (PW - blockH) / 2 + off.c; // ＋で上へ（紙を横長に持ったとき）
   const date = `${esc(warekiShort(ex.date))}${isBasic(ex) ? '　基本検査' : ''}`;
   const no = esc(p.chartNo ? `No.${p.chartNo}` : '');
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${PW * CARD.pxmm}" height="${PH * CARD.pxmm}" viewBox="0 0 ${PW} ${PH}">
@@ -2928,8 +2932,9 @@ async function cardPagePNG(p, ex) {
   try {
     const img = new Image();
     await new Promise((res, rej) => { img.onload = res; img.onerror = () => rej(new Error('画像を作れませんでした')); img.src = url; });
+    const { PW, PH } = cardSize();
     const cv = document.createElement('canvas');
-    cv.width = CARD.w * CARD.pxmm; cv.height = CARD.h * CARD.pxmm;
+    cv.width = Math.round(PW * CARD.pxmm); cv.height = Math.round(PH * CARD.pxmm);
     const g = cv.getContext('2d');
     g.fillStyle = '#fff'; g.fillRect(0, 0, cv.width, cv.height);
     g.drawImage(img, 0, 0, cv.width, cv.height);
