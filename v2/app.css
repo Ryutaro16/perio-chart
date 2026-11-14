@@ -795,20 +795,16 @@ body.pr-portrait #print .chart i.dif { font-size: 6pt; }
   #clipp { flex: 1 1 100%; }
   #paperp, #addp { flex: 1 1 0; }
 }
-/* 紙カルテ用（17×4.5cm） */
-.strip-page { padding-top: 6mm; }
-.strip-date { font-size: 11pt; font-weight: 600; margin: 0 0 1.5mm 0; display: flex; gap: 6mm; }
+/* 紙カルテ用（15×4.2cm） */
+.strip-page { width: 150mm; height: 94mm; box-sizing: border-box; padding-top: 9mm; overflow: hidden; }
+.strip-date { font-size: 10pt; font-weight: 600; margin: 0 0 1.5mm 19mm; display: flex; gap: 6mm; }
 .strip-who { font-weight: 400; color: #555; }
-.strip-box { position: relative; width: 170mm; height: 45mm; }
-.strip-svg { display: block; width: 170mm; height: 45mm; }
-.strip-box .cm { position: absolute; width: 4mm; height: 4mm; border-color: #888; border-style: solid; border-width: 0; }
-.strip-box .cm.tl { left: -5mm; top: -5mm; border-right-width: .2mm; border-bottom-width: .2mm; }
-.strip-box .cm.tr { right: -5mm; top: -5mm; border-left-width: .2mm; border-bottom-width: .2mm; }
-.strip-box .cm.bl { left: -5mm; bottom: -5mm; border-right-width: .2mm; border-top-width: .2mm; }
-.strip-box .cm.br { right: -5mm; bottom: -5mm; border-left-width: .2mm; border-top-width: .2mm; }
-.strip-ruler { margin-top: 12mm; font-size: 8pt; color: #555; }
-.strip-ruler svg { display: block; margin: 0 0 1.5mm -1mm; }
-.print-sample.pr-portrait #print .strip-page { padding: 8mm 9mm; }
+.strip-box { position: relative; width: 150mm; height: 42mm; }
+.strip-svg { display: block; width: 150mm; height: 42mm; }
+.strip-ruler { margin: 9mm 0 0 19mm; font-size: 6.5pt; color: #555; }
+.strip-ruler svg { display: block; margin: 0 0 1mm -1mm; }
+.print-sample.strip-sample #print { width: auto; padding: 10mm; background: #e5e7eb; }
+.print-sample.strip-sample #print .strip-page { background: #fff; margin: 0 auto; box-shadow: 0 0 0 .3mm #999; }
 .prchoice { display: grid; gap: 10px; margin: 6px 0 4px; }
 .prchoice .btn { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; padding: 12px 16px; height: auto; }
 .prchoice small { font-weight: 400; color: #667; font-size: 13px; }
