@@ -690,7 +690,7 @@ async function showPatient(pid, showDeleted = false) {
     if (!b) return;
     const find = (id) => exams.find((x) => x.id === id);
     if (b.dataset.open) openEditor(b.dataset.open);
-    else if (b.dataset.print) await printExam(p, find(b.dataset.print));
+    else if (b.dataset.print) choosePrint(p, find(b.dataset.print));
     else if (b.dataset.del) {
       const ex = find(b.dataset.del);
       if (!(await askConfirm(`${fmtDate(ex.date)} の検査を削除しますか？\n（「削除した検査」からいつでも元に戻せます）`, '削除する', true))) return;
@@ -827,7 +827,7 @@ async function openEditor(examId) {
   $('#micbop').onclick = () => voiceToggle('bop');
   $('#back').onclick = leave;
   $('#done').onclick = async () => { await flushSave(); if (await finishCheck(exam)) leave(); };
-  $('#prt').onclick = async () => { await flushSave(); await printExam(patient, exam); };
+  $('#prt').onclick = async () => { await flushSave(); choosePrint(patient, exam); };
   $('#exdate').onchange = (e) => { if (e.target.value) { exam.date = e.target.value; touch(false); } };
   $('#exby').oninput = (e) => { exam.examiner = e.target.value.trim(); touch(false); };
   $('#exby').onchange = () => { // 登録した検査者なら、その人の順番に並べ直す（今の部位はそのまま）
@@ -2820,6 +2820,99 @@ function printTrend(p, liveAsc) {
   setTimeout(() => window.print(), 50);
 }
 
+// 紙カルテ用（当院の「精密・再評価検査」の1回分の欄と同じ並び）：横170mm×縦45mm。切って紙カルテの空いた欄に貼る
+// 並び：動揺度／頬側／口蓋側／プラーク／歯の番号／プラーク／舌側／頬側／動揺度。1歯3マス、出血は赤丸、欠損は斜線
+const STRIP = { w: 170, h: 45, lab: 20 };
+const warekiShort = (iso) => { const [y, m, d] = (iso || '').split('-').map(Number); return y ? `R${y - 2018}.${m}.${d}` : ''; };
+function stripSVG(ex) {
+  const { w, h, lab } = STRIP, tw = (w - lab) / 16, cw = tw / 3, rh = h / 9;
+  const T = ex.teeth, basic = isBasic(ex);
+  const out = [];
+  const f2 = (n) => n.toFixed(2);
+  const line = (x1, y1, x2, y2, sw = 0.2, extra = '') => out.push(`<line x1="${f2(x1)}" y1="${f2(y1)}" x2="${f2(x2)}" y2="${f2(y2)}" stroke="#222" stroke-width="${sw}" ${extra}/>`);
+  const text = (x, y, str, size, extra = '') => out.push(`<text x="${f2(x)}" y="${f2(y)}" font-size="${size}" text-anchor="middle" dominant-baseline="central" ${extra}>${esc(String(str))}</text>`);
+  const tx = (i) => lab + i * tw; // i 番目の歯の左端
+  const sub = lab * 0.48; // 見出しの「ポケット」と「頬側・口蓋」の境
+  // 外枠と横の線
+  out.push(`<rect x="0" y="0" width="${w}" height="${h}" fill="none" stroke="#222" stroke-width="0.35"/>`);
+  for (let r = 1; r < 9; r++) {
+    const inPocket = r === 2 || r === 7; // 「ポケット」の見出しの中は、右側だけ線を引く
+    line(inPocket ? sub : 0, r * rh, w, r * rh, r === 4 || r === 5 ? 0.3 : 0.2);
+  }
+  line(lab, 0, lab, h, 0.3);
+  line(sub, rh, sub, rh * 3); line(sub, rh * 6, sub, rh * 8);
+  // 見出し
+  const L = (r, str, x = lab / 2, size = 2.4) => text(x, (r + 0.5) * rh, str, size, 'font-weight="600"');
+  L(0, '動揺度検査'); L(8, '動揺度検査'); L(3, 'プラーク'); L(5, 'プラーク');
+  text(sub / 2, 2 * rh, 'ポケット', 2.1, 'font-weight="600"'); text(sub / 2, 7 * rh, 'ポケット', 2.1, 'font-weight="600"');
+  const sx = (sub + lab) / 2;
+  L(1, '頬側', sx); L(2, '口蓋', sx); L(6, '舌側', sx); L(7, '頬側', sx);
+  // 縦の線（歯の境目は実線、1歯の中の3マスは点線）
+  for (let i = 0; i <= 16; i++) {
+    const x = tx(i);
+    if (i > 0 && i < 16) line(x, 0, x, h, i === 8 ? 0.45 : 0.2);
+    if (i < 16) for (const j of [1, 2]) for (const r of [1, 2, 6, 7]) line(x + j * cw, r * rh, x + j * cw, (r + 1) * rh, 0.12, 'stroke-dasharray="0.5 0.5"');
+  }
+  const rows = [
+    { r: 0, row: UPPER, kind: 'mob' }, { r: 1, row: UPPER, kind: 'ppd', side: 'b' }, { r: 2, row: UPPER, kind: 'ppd', side: 'l' },
+    { r: 3, row: UPPER, kind: 'pl' }, { r: 4, row: UPPER, kind: 'num' }, { r: 5, row: LOWER, kind: 'pl' },
+    { r: 6, row: LOWER, kind: 'ppd', side: 'l' }, { r: 7, row: LOWER, kind: 'ppd', side: 'b' }, { r: 8, row: LOWER, kind: 'mob' },
+  ];
+  for (const { r, row, kind, side } of rows) row.forEach((t, i) => {
+    const x = tx(i), y = r * rh, th = T[t];
+    if (kind === 'num') { text(x + tw / 2, y + rh / 2, t % 10, 2.6); return; }
+    if (kind === 'pl') { // 紙と同じ×の枠。プラークの付いた面を薄く塗る
+      const up = isUpper(t), rt = isPtRight(t);
+      const map = { top: up ? 'b' : 'l', bottom: up ? 'l' : 'b', left: rt ? 'd' : 'm', right: rt ? 'm' : 'd' };
+      const P = (a, b) => `${f2(a)},${f2(b)}`, c = P(x + tw / 2, y + rh / 2);
+      const tri = { top: [P(x, y), P(x + tw, y)], bottom: [P(x, y + rh), P(x + tw, y + rh)], left: [P(x, y), P(x, y + rh)], right: [P(x + tw, y), P(x + tw, y + rh)] };
+      for (const k of Object.keys(tri)) if (!basic && !th.missing && th.pl && th.pl[map[k]]) out.push(`<polygon points="${tri[k].join(' ')} ${c}" fill="#bbb"/>`);
+      line(x, y, x + tw, y + rh, 0.12); line(x + tw, y, x, y + rh, 0.12);
+      return;
+    }
+    if (th.missing) { if (kind === 'ppd') line(x + 0.6, y + rh - 0.6, x + tw - 0.6, y + 0.6, 0.3); return; }
+    if (kind === 'mob') { if (th.mob != null) text(x + tw / 2, y + rh / 2, th.mob, 2.8); return; }
+    // ポケット：基本検査は頬側の真ん中のマスに1つだけ
+    const keys = basic ? (side === 'b' ? [null, 'x', null] : [null, null, null]) : screenKeys(t, side);
+    keys.forEach((k, j) => {
+      if (!k) return;
+      const v = th.ppd[k];
+      const cx = x + (j + 0.5) * cw, cy = y + rh / 2;
+      if (v != null) text(cx, cy, v, v >= 10 ? 2.3 : 3, v >= 4 ? 'font-weight="700"' : '');
+      if (th.bop && th.bop[k]) out.push(`<circle cx="${f2(cx)}" cy="${f2(cy)}" r="${f2(Math.min(cw, rh) / 2 - 0.1)}" fill="none" stroke="#d00" stroke-width="0.3"/>`);
+      if (th.pus && th.pus[k]) out.push(`<polygon points="${f2(cx + cw / 2 - 1.1)},${f2(y + 0.3)} ${f2(cx + cw / 2 - 0.2)},${f2(y + 0.3)} ${f2(cx + cw / 2 - 0.65)},${f2(y + 1.1)}" fill="#b45309"/>`);
+    });
+  });
+  return `<svg class="strip-svg" xmlns="http://www.w3.org/2000/svg" width="${w}mm" height="${h}mm" viewBox="0 0 ${w} ${h}" font-family="-apple-system, 'Hiragino Sans', sans-serif" fill="#111">${out.join('')}</svg>`;
+}
+function stripSheetHTML(p, ex) {
+  // 四隅の外側に切り取りの目印、下に拡大・縮小されていないか確かめる 10cm の物差し
+  return `<div class="strip-page">
+    <div class="strip-date">${esc(warekiShort(ex.date))}${isBasic(ex) ? '　基本検査' : ''}<span class="strip-who">${esc(p.chartNo ? `No.${p.chartNo}` : '')}</span></div>
+    <div class="strip-box">${stripSVG(ex)}<i class="cm tl"></i><i class="cm tr"></i><i class="cm bl"></i><i class="cm br"></i></div>
+    <div class="strip-ruler"><svg width="102mm" height="5mm" viewBox="-1 0 102 5"><line x1="0" y1="4.5" x2="100" y2="4.5" stroke="#333" stroke-width="0.3"/>${Array.from({ length: 11 }, (_, i) => `<line x1="${i * 10}" y1="${i % 5 ? 2.5 : 0.5}" x2="${i * 10}" y2="4.5" stroke="#333" stroke-width="0.3"/>`).join('')}</svg><span>この線が 10cm なら、大きさは合っています（違うときは、印刷の画面で「100%」「実際のサイズ」を選んでください）</span></div>
+  </div>`;
+}
+function printStrip(p, ex) {
+  let st = $('#pagestyle');
+  if (!st) { st = document.createElement('style'); st.id = 'pagestyle'; document.head.appendChild(st); }
+  st.textContent = '@media print { @page { size: A4 portrait; margin: 15mm 15mm; } }';
+  document.body.classList.add('pr-portrait');
+  $('#print').innerHTML = stripSheetHTML(p, ex);
+  setTimeout(() => window.print(), 50);
+}
+// 印刷ボタン：どちらの形で印刷するか選ぶ
+function choosePrint(p, ex) {
+  openDialog(`<div class="dlg-body"><h2>印刷</h2>
+    <div class="prchoice">
+      <button class="btn big" id="prA4"><b>検査表（A4横）</b><small>チャート・集計・凡例</small></button>
+      <button class="btn big" id="prStrip"><b>紙カルテ用（17×4.5cm）</b><small>紙の1回分の欄と同じ並び。切って貼る</small></button>
+    </div>
+    <div class="dlg-actions"><button class="btn" data-close>やめる</button></div></div>`);
+  $('#prA4').onclick = () => { closeDialog(); printExam(p, ex); };
+  $('#prStrip').onclick = () => { closeDialog(); printStrip(p, ex); };
+}
+
 /* ================= 設定：音声の案内 ================= */
 const GUIDE_ITEMS = [
   ['知らせ', [['fail', '聞き取れなかったとき', '警告音＋「6番、部位をもう一度」'], ['area', 'エリアが変わったとき（出血）', 'チャイム（声なし。聞き取りは止めない）'], ['start', '始めたとき・モードを替えたとき', 'チャイム＋「出血モード、右上頬側から」']]],
@@ -3760,7 +3853,8 @@ async function openPasteFromShortcut() {
     const { patient, exams } = makeDemo();
     settings.clinicName = '（医院名）';
     document.body.classList.add('print-sample');
-    if (location.search.includes('trend')) { setPage('portrait'); document.body.classList.add('pr-portrait'); $('#print').innerHTML = trendSheetHTML(patient, exams); }
+    if (location.search.includes('strip')) { document.body.classList.add('pr-portrait'); $('#print').innerHTML = stripSheetHTML(patient, exams[0]); }
+    else if (location.search.includes('trend')) { setPage('portrait'); document.body.classList.add('pr-portrait'); $('#print').innerHTML = trendSheetHTML(patient, exams); }
     else { setPage('landscape'); $('#print').innerHTML = printHTML(patient, exams[0]); }
     return;
   }
