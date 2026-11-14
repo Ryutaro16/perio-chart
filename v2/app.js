@@ -1312,10 +1312,12 @@ function onChartTap(e) {
   if (cell) {
     const t = Number(cell.dataset.t), k = cell.dataset.k;
     if (ed.mode === 'bop') { tapFlag('bop', t, k, T[t].bop); return touch(); }
-    voice.lastSite = null; voice.specTooth = null;
+    // 押して選んだ歯は、声の「近心 4」「4 4 4」の行き先になる（飛び飛びモードでも数字だけで入る）
+    voice.lastSite = null; voice.specTooth = { t, side: k[0], at: Date.now(), kind: 'tap' }; voice.pendingSpec = null;
     ed.mode = 'ppd';
     const i = ed.seq.findIndex((s) => s.t === t && s.k === k);
-    if (i >= 0) ed.cur = i;
+    if (i >= 0) { ed.cur = i; voice.endedSite = null; }
+    if (voice.on && voice.mode !== 'bop' && i >= 0 && guideOn('tooth')) guide([{ text: siteSpeech(ed.seq[i]) }]);
     return refresh();
   }
   const fcell = e.target.closest('[data-f]');
@@ -1427,6 +1429,7 @@ function undoProv() {
   }
   ed.cur = p.cur; voice.lastSite = p.lastSite; voice.endedSite = p.endedSite;
   voice.specTooth = p.specTooth; voice.bopTooth = p.bopTooth; voice.bopLast = p.bopLast;
+  if ('pendingSpec' in p) voice.pendingSpec = p.pendingSpec;
   if (p.ctx) voice.ctx = { ...p.ctx };
 }
 function voiceInterim(text) {
@@ -1443,7 +1446,7 @@ function voiceInterim(text) {
     undoProv();
     if (fresh) voice.cue = ed.cur; // 話し始め。ここから進んだぶんを合図する
     const before = { cur: ed.cur, lastSite: voice.lastSite, endedSite: voice.endedSite, ctx: voice.ctx ? { ...voice.ctx } : null,
-      specTooth: voice.specTooth, bopTooth: voice.bopTooth, bopLast: voice.bopLast }; // 仮入力を戻すときに、言葉の続きの記憶も戻す
+      specTooth: voice.specTooth, bopTooth: voice.bopTooth, bopLast: voice.bopLast, pendingSpec: voice.pendingSpec }; // 仮入力を戻すときに、言葉の続きの記憶も戻す
     voice.junkCut = false; voice.specCut = false;
     const ops = handleSpeech(text, true);
     markVoiceOps(ops);
@@ -1611,7 +1614,7 @@ function voiceToggle(mode = 'ppd') {
   setVoiceMode(mode);
   if (!voice.on) voiceStart();
   else {
-    voiceMsg(mode === 'bop' ? '「右上 頬側」「7 遠心 近心」のように話してください' : '「3、3、4プラス」のように話してください');
+    voiceMsg(startHint());
     if (guideOn('start')) guide([{ tone: 'chime', text: startText() }]);
   }
 }
@@ -1663,13 +1666,16 @@ async function voiceStart() {
   voice.on = true;
   voice.lastSite = null;
   voice.endedSite = null;
-  voice.specTooth = null; voice.bopTooth = null; voice.bopLast = null; voice.discard = false;
+  if (!(voice.specTooth && voice.specTooth.kind === 'tap')) voice.specTooth = null; // 始める前に押して選んだ場所は残す
+  voice.bopTooth = null; voice.bopLast = null; voice.discard = false; voice.pendingSpec = null;
   try { r.start(); } catch (err) { voice.on = false; voiceMsg('音声認識を開始できませんでした：' + esc(err.message)); return; }
   const want = voice.mode === 'bop' ? 'bop' : 'ppd';
   if (ed.mode !== want) { ed.mode = want; refresh(); }
-  voiceMsg(voice.mode === 'bop' ? '「右上 頬側」「7 遠心 近心」のように話してください' : '「3、3、4プラス」のように話してください');
+  voiceMsg(startHint());
   if (guideOn('start')) guide([{ tone: 'chime', text: startText() }]);
 }
+const startHint = () => (voice.mode === 'bop' ? '「右上 頬側」「7 遠心 近心」のように話してください'
+  : isJump() ? '飛び飛び：「左上7 うら まえ 4」のように歯と場所を言ってください（チャートを押して選び、数字だけでも入ります）' : '「3、3、4プラス」のように話してください');
 function voiceStop(silent = false) {
   clearTimeout(voice.timer); clearTimeout(voice.silTimer);
   voice.cutReason = '停止ボタン';
@@ -1762,7 +1768,12 @@ function bindMicSettings() {
   };
 }
 // 入力しなかった理由（聞き取れない・欠損など）は、帯を黄色にして大きく出す
-const WARN_RE = /入力していません|聞き取れません|欠損です|ありません|出血モードです|入力済み|入力できる言葉/;
+const WARN_RE = /入力していません|聞き取れません|欠損です|ありません|出血モードです|入力済み|入力できる言葉|決まっていません/;
+// 歯の名前を省いた「近心 4」「うら なか 3」は、直前（この時間内）に歯を言ったとき・チャートを押して選んだときだけ、その歯に入れる。
+// 話し始めの歯の名前が聞き取られないと、カーソルのある歯に入ってしまっていたため（2026-11-14 の記録）
+const SPEC_KEEP_MS = 15000;
+const PEND_MS = 20000; // 「どの歯ですか」と聞いたあと、歯の名前だけ言えば、さっきの言葉をその歯に入れる
+const isJump = () => !!settings.voiceJump && voice.mode !== 'bop'; // 飛び飛びモード（場所を言って入れる。数字だけでは入れない）
 function setVoiceResult(raw, done, fallback) {
   const warns = done.filter((d) => WARN_RE.test(d));
   const oks = done.filter((d) => !WARN_RE.test(d));
@@ -1876,6 +1887,8 @@ function failSpeech(w) {
   if ((m = w.match(/聞き取れない言葉がありました。(\S+)\s+から/))) return `${num(m[1])}番から、もう一度`; // 基本検査（部位なし）
   if ((m = w.match(/^(.+?)は欠損です/))) return `${num(m[1])}番は欠損です`;
   if (/歯の番号が聞き取れません|番の歯はありません/.test(w)) return '番号をもう一度';
+  if (/どの歯か聞き取れません/.test(w)) return 'どの歯ですか';
+  if (/場所が決まっていません/.test(w)) return '歯と場所をどうぞ';
   if (/歯の名前が聞き取れません/.test(w)) return '歯の名前をもう一度';
   if (/近心・遠心・中央が聞き取れません/.test(w)) return '部位をもう一度';
   if (/数字が聞き取れません/.test(w)) return '数字をもう一度';
@@ -1886,7 +1899,7 @@ function failSpeech(w) {
 }
 const siteSpeech = (s) => (s.k === 'x' ? toothName(s.t) : `${toothName(s.t)}、${sideName(s.t, s.k[0])}、${POS[s.k[1]]}`);
 const posText = (s) => (s.k === 'x' ? '' : POS[s.k[1]]); // 基本検査は部位なし
-const startText = () => (voice.mode === 'bop' ? `出血モード、${ctxLabel(voice.ctx)}から` : `ポケット、${siteSpeech(ed.seq[ed.cur])}から`);
+const startText = () => (voice.mode === 'bop' ? `出血モード、${ctxLabel(voice.ctx)}から` : isJump() ? 'ポケット、飛び飛び。歯と場所をどうぞ' : `ポケット、${siteSpeech(ed.seq[ed.cur])}から`);
 const areaName = (s) => s.al || `${QNAME[quad(s.t)]}${sideName(s.t, s.k[0])}`; // 区間の名前（「右上頬側」。1歯ずつ・基本検査は「右上」）
 const areaOf = (s) => (s.a ?? areaName(s)); // 区間（音声の区切り・案内の単位）
 const flagWord = (o, T) => (o.field === 'pus' ? '排膿' : T[o.t].bop[o.k] ? '出血' : '出血なし');
@@ -1914,9 +1927,9 @@ function cutRec(reason = '') {
   // 1つの文の中で最初に区切るとき、その前の状態を覚えておく（iPadが前の部分を書き換えたら、まとめて戻して入れ直すため）
   if (!base) {
     const p = voice.prov, at = p && p.ops ? voice.hist.indexOf(p.ops) : -1; // 仮入力が入る前の状態から
-    const src = p || { cur: ed.cur, lastSite: voice.lastSite, endedSite: voice.endedSite, ctx: voice.ctx, specTooth: voice.specTooth, bopTooth: voice.bopTooth, bopLast: voice.bopLast };
+    const src = p || { cur: ed.cur, lastSite: voice.lastSite, endedSite: voice.endedSite, ctx: voice.ctx, specTooth: voice.specTooth, bopTooth: voice.bopTooth, bopLast: voice.bopLast, pendingSpec: voice.pendingSpec };
     voice.session = { hist0: at >= 0 ? at : voice.hist.length, cur: src.cur, lastSite: src.lastSite, endedSite: src.endedSite, ctx: src.ctx ? { ...src.ctx } : null,
-      specTooth: src.specTooth, bopTooth: src.bopTooth, bopLast: src.bopLast };
+      specTooth: src.specTooth, bopTooth: src.bopTooth, bopLast: src.bopLast, pendingSpec: src.pendingSpec };
   }
   voiceFinal(text);
   voice.consumed = base + normSpeech(text);
@@ -1934,6 +1947,7 @@ function rollbackSession(full) {
   ed.cur = S.cur; voice.lastSite = S.lastSite; voice.endedSite = S.endedSite;
   if (S.ctx) voice.ctx = { ...S.ctx };
   voice.specTooth = S.specTooth; voice.bopTooth = S.bopTooth; voice.bopLast = S.bopLast;
+  if ('pendingSpec' in S) voice.pendingSpec = S.pendingSpec;
   voice.consumed = ''; voice.session = null;
   if (voice.log[0]) voice.log[0].info = `${voice.log[0].info || ''}・iPadが書き換えたので入れ直し`;
   touch();
@@ -2031,27 +2045,40 @@ function renderVoice() {
     ? `<span class="vstate wait">🔈 ${voice.speaking ? `「${esc(voice.speaking)}」` : '案内中'}<small>待って</small></span>`
     : '<span class="vstate live"><i></i>どうぞ</span>';
   const c = ed.seq && ed.seq[ed.cur];
+  const jumpFree = isJump() && !voice.specTooth; // 飛び飛びで、まだ場所が決まっていない（歯を言う・押して選ぶと決まる）
   const where = voice.on && voice.mode !== 'bop' && c && ed.exam
-    ? `<span class="vwhere"><small>次</small>${voice.endedSite ? '全部位 入力済み' : `${toothName(c.t)}<b>${c.k === 'x' ? 'ポケット' : `${sideName(c.t, c.k[0])} ${POS[c.k[1]]}`}</b>`}</span>` : '';
+    ? `<span class="vwhere"><small>${isJump() ? '今' : '次'}</small>${jumpFree ? '<b>歯と場所をどうぞ</b>' : voice.endedSite ? '全部位 入力済み' : `${toothName(c.t)}<b>${c.k === 'x' ? 'ポケット' : `${sideName(c.t, c.k[0])} ${POS[c.k[1]]}`}</b>`}</span>` : '';
   v.innerHTML = `<div class="vrow">${state}${where}${voice.on && voice.mode === 'bop' && voice.ctx ? `<span class="vctx">出血入力中：${ctxLabel(voice.ctx)}</span>` : ''}${voice.warn ? `<span class="vwarn">⚠ ${esc(voice.warn)}</span>` : ''}<span class="vm">${voice.msg}</span>${voice.interim ? `<span class="vi">${esc(voice.interim)}…</span>` : ''}
-    <button class="tool undo vlogbtn vng" id="vng" title="今の聞き取りは違う">✕ 違う</button><button class="tool undo" id="vhelp">？ 話し方</button><button class="tool undo" id="vmute">${voice.muted ? '🔇 案内オフ' : '🔈 案内'}</button><button class="tool undo" id="vlog">聞き取りの記録</button><button class="tool undo" id="vtest">読み上げテスト</button></div>
+    ${voice.mode !== 'bop' && !isBasic(ed.exam || {}) ? `<button class="tool undo vjump${isJump() ? ' on' : ''}" id="vjump" title="入れ方を切り替える">${isJump() ? '↔ 飛び飛び' : '→ 順に'}</button>` : ''}<button class="tool undo vlogbtn vng" id="vng" title="今の聞き取りは違う">✕ 違う</button><button class="tool undo" id="vhelp">？ 話し方</button><button class="tool undo" id="vmute">${voice.muted ? '🔇 案内オフ' : '🔈 案内'}</button><button class="tool undo" id="vlog">聞き取りの記録</button><button class="tool undo" id="vtest">読み上げテスト</button></div>
 `;
   $('#vmute').onclick = () => { voice.muted = !voice.muted; if (voice.muted) { guideQ.length = 0; try { speechSynthesis.cancel(); } catch { /* なし */ } } renderVoice(); };
   $('#vlog').onclick = showVoiceLog;
   $('#vtest').onclick = showVoiceTest;
   $('#vhelp').onclick = showVoiceHelp;
   $('#vng').onpointerdown = (e) => { e.preventDefault(); markLastVoiceNG(); }; // 話している間は帯が描き直されるので、押した瞬間に
+  if ($('#vjump')) $('#vjump').onpointerdown = (e) => {
+    e.preventDefault();
+    settings.voiceJump = !settings.voiceJump; saveSettings();
+    undoProv(); voice.pendingSpec = null;
+    voiceMsg(startHint());
+    if (voice.on && guideOn('start')) guide([{ tone: 'chime', text: isJump() ? '飛び飛び。歯と場所をどうぞ' : `順に。${siteSpeech(ed.seq[ed.cur])}から` }]);
+  };
 }
 // 話し方の早見表（言い方と、音の意味）
 function showVoiceHelp() {
   const row = (say, what) => `<tr><td class="say">${say}</td><td>${what}</td></tr>`;
   openDialog(`<div class="dlg-body vhelp"><h2>音声入力の話し方</h2>
-    <div class="vhtips"><b>聞き取られやすいコツ</b>　7は「<b>なな</b>」・4は「<b>よん</b>」（「しち」「し」は1や別の言葉になりやすい）／近心・中央・遠心は「<b>まえ</b>・<b>なか</b>・<b>おく</b>」でも言えます（例「右上6 おく 5」「7 まえ おく」）</div>
+    <div class="vhtips"><b>聞き取られやすいコツ</b>　7は「<b>なな</b>」・4は「<b>よん</b>」（「しち」「し」は1や別の言葉になりやすい）／近心・中央・遠心は「<b>まえ</b>・<b>なか</b>・<b>おく</b>」、頬側・口蓋側（舌側）は「<b>おもて</b>・<b>うら</b>」でも言えます（例「左上7 うら まえ 4」）／歯の名前を言ったら、ひと呼吸おいて続ける<br>
+      <b>声かけは無視します</b>　「はい」「失礼します」「開けてください」「楽にしてください」などは入力しません。「次」「戻る」「停止」は、その言葉だけを言ったときに動きます</div>
+    <div class="vhtips"><b>入れ方は2つ</b>（帯のボタンで切り替え）　<b>→ 順に</b>：今の場所から数字を順に入れる（全部を入れるとき）／<b>↔ 飛び飛び</b>：歯と場所を言って1か所ずつ入れる。数字だけでは入れません（チャートを押して選んだあとや、歯の名前だけ言ったあとは、数字だけで入ります）。入れた所を声で返し、カーソルはそこに残ります<br>
+      歯の名前が聞き取れなかったときは入れずに「<b>どの歯ですか</b>」と聞きます。歯の名前だけ言えば、さっきの言葉がその歯に入ります</div>
     <div class="vhcols"><section><h3>🎤 ポケット</h3><table>
       ${row('「3、3、4」', '今の場所から順に入れて進む')}
       ${row('「4 プラス」', '入れた部位に出血。「排膿」「マイナス」（出血なし）も')}
       ${row('「5番 中央 4」', '<b>言い直し</b>：直前に入れたエリアの5番。入れたあと元の場所に戻る')}
-      ${row('「右上6 口蓋側 近心 5」', '<b>場所を指定</b>して1か所入れる（続けて「遠心 4」で同じ歯）')}
+      ${row('「右上6 口蓋側 近心 5」', '<b>場所を指定</b>して1か所入れる（続けて「遠心 4」で同じ歯。15秒まで）')}
+      ${row('「左上7 うら まえ 4」', '「左上7 口蓋側 近心 4」と同じ')}
+      ${row('チャートを押す →「4 4 4」', '押した所から入れる（「近心 4」なら押した歯の近心）')}
       ${row('「右上6」', 'その歯へ移動して、そこから順に入れる')}
       ${row('「取り消し」', '最後に入れた<b>歯1本分</b>を取り消す。その歯から言い直せる')}
       ${row('「戻る」「次」', 'カーソルを1つ戻す・進める')}
@@ -2077,6 +2104,9 @@ function showVoiceHelp() {
     <div class="dlg-actions"><div class="grow"></div><button class="btn primary" data-close>閉じる</button></div></div>`, true);
 }
 
+// 患者さんへの声かけ。入力の言葉ではないので、聞き取った文から黙って取り除く（2026-11-14 利用者の希望。「はい」で警告が鳴っていた）
+const CHATTER = /はい(?!のう|膿)|ハイ|失礼(?:します|しました|いたします)?|しつれいします|お疲れ(?:さま|様)(?:でした)?|おつかれさま(?:でした)?|楽に(?:して)?(?:ください)?|らくに(?:して)?(?:ください)?|お口を?|(?:もう少し|もうちょっと)?(?:開けて|あけて|閉じて|とじて|閉めて|しめて)(?:ください)?|ゆすいで(?:ください)?|うがい(?:して)?(?:ください)?|大丈夫(?:です|ですか|だよ|ですよ)?|だいじょうぶ(?:です)?|痛(?:かったら|ければ|いときは|い時は)(?:左?手を)?(?:上げて|あげて)?(?:ください)?|風が出ます|水が出ます|椅子を?(?:倒し|起こし)ます|(?:倒し|起こし)ます|ください|お願いします|おねがいします/g;
+const stripChatter = (s) => s.replace(CHATTER, ' ');
 // 聞き取った文字を、入力の指示（トークン）に分ける
 const KD = { '〇': 0, '零': 0, '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9 };
 const SPEECH_FIX = [
@@ -2084,14 +2114,17 @@ const SPEECH_FIX = [
   [/([1-8])0,000/g, '$1万'], [/([1-8])\s*万/g, '$1番'], // 「7番 遠心」→「7万円新」「70,000」：数字のあとの「万」は「番」
   [/1\s*日/g, '1 1'], // 「1 1 1」→「1日1」「1 1日」
   // 近心・遠心・中央の言いかえ（聞き取りやすい日常の言葉）：まえ＝近心、なか＝中央、おく＝遠心。「7 おく」は「7億」と聞こえることがある
+  [/おもて|オモテ|表(?!示)/g, '頬側'], [/うら|ウラ|裏/g, '口蓋側'], // 頬側＝おもて、口蓋側・舌側＝うら（言いやすい言葉。下の歯の「うら」は舌側になる）
   [/真ん中|まんなか|まん中|マンナカ/g, '中央'], // 「なか」より先に（「まん中央」にならないように）
   [/てまえ|手前|まえ|マエ|前(?!部)/g, '近心'], [/おく|オク|奥|億/g, '遠心'], [/なか|ナカ|中(?![央王応を])/g, '中央'],
   // 部位の言葉の聞き間違い。「聞き取りの記録」で見つかったものを元に、音の組み合わせで読み替える
   [/(右上|左上|右下|左下)?\s*([1-8])?\s*([5五後高口公校甲工交好向広])?\s*倍速/g, (m, q, d, pre) => (q ? `${q}${d || ''} 口蓋側` : `${pre && d ? d : ''} 口蓋側`)],
   [/(右上|左上|右下|左下)?\s*([1-8])?\s*([5五後高口公校甲工交好向広])?\s*階/g, (m, q, d, pre) => (!pre && d !== '5' ? m : q ? `${q}${d || ''} 口蓋側` : `${pre && d ? d : ''} 口蓋側`)], // 「5階」＝口蓋側
   [/頰側|ほお側|ほおがわ|頬がわ|きょうそく|右足|[教協共強胸京凶狭恐鏡境競秒驚予][側則速測即息足束底職]/g, '頬側'],
+  [/甲甲|甲賀|高賀|工場|こうが(?!い)/g, '口蓋側'], // 2026-11-14 の記録（「甲賀園新4」「甲甲園44」「工場MC 4」）
   [/こうがい(?:側|そく|がわ)|口蓋がわ|[口公甲高校構郊工交広向好号後][外害蓋府布付凱街](?:側|そく|即|則|速|測|足|束|息)?/g, '口蓋側'],
   [/ぜっそく|ぜつそく|舌がわ|したがわ|[舌絶接結][側速息則測足束底触]/g, '舌側'],
+  [/(?<![A-Za-z])[NM]C(?![A-Za-z])|妊娠|にんしん/g, '近心'], // 2026-11-14 の記録（「倍速NC 4」「工場MC 4」「妊娠4」）
   [/きんしん|PC|ピーシー|検診|健診|検心|けんしん|[禁近金謹筋均菌勤][親心震振身新信森慎止進鍼神]/g, '近心'], [/[遠延円炎園援演塩]後/g, '遠心 5'], [/えんしん|えいしん|エイシン|[遠延円炎園援演塩]\s*[CＣシ](?![a-zA-Z])|[遠延円炎園援演塩返変雲俺][心伸信陣進身親新震振鍼神]/g, '遠心'], [/真ん中|まんなか|ちゅうおう|[中注宙柱忠][王央応を]|(側)王/g, (m, sd) => (sd ? sd + '中央' : '中央')],
   [/禁\s*(?=遠心)/g, '近心 '], // 「禁遠心」＝近心の聞き落とし＋遠心
   [/ぷらす|\+|クラス|グラス|ブラス/g, 'プラス'], [/ぜんぶ|全部|前部/g, '全部'], [/まいなす/g, 'マイナス'], [/はいのう|排のう/g, '排膿'],
@@ -2119,7 +2152,7 @@ function readNumbers(s) {
 }
 
 function tokenizeSpeech(raw) {
-  let s = raw.normalize('NFKC');
+  let s = stripChatter(raw.normalize('NFKC'));
   for (const [re, to] of SPEECH_FIX) s = s.replace(re, to);
   s = s.replace(/(右上|左上|右下|左下|頬側|口蓋側|舌側|近心|遠心|中央|全部|プラス|マイナス|排膿)/g, ' $1 '); // 言葉の区切りをはっきりさせる
   s = readNumbers(s);
@@ -2171,12 +2204,15 @@ function tokenizeSpeech(raw) {
     else if (g.next) toks.push({ type: 'next' });
     else if (g.stop) toks.push({ type: 'stop' });
   }
+  // 「次」「戻る」「停止」は、その言葉だけを言ったときだけ（「次は〜」「次の…」のような声かけでカーソルが動かないように）
+  const CTRL = ['prev', 'next', 'stop'];
+  if (toks.some((t) => CTRL.includes(t.type)) && s.replace(/進む|すすむ|次へ?|つぎ|スキップ|戻る|もどる|停止|ストップ|終了/g, '').replace(/[\s、。,.!?！？]/g, '')) return toks.filter((t) => !CTRL.includes(t.type));
   return toks;
 }
 
 // 数字の読み（さん・よん・に・ご…）に出てくる音だけでできた言葉か
 function looksLikeNumbers(raw) {
-  const h = toHira(raw.normalize('NFKC')).replace(/[\s、。,.!?！？]/g, '');
+  const h = toHira(stripChatter(raw.normalize('NFKC'))).replace(/[\s、。,.!?！？]/g, '');
   return h.length >= 2 && /^[さんよいにごろくなはちきゅうしぜみーおう]+$/.test(h);
 }
 const shortSite = (s) => (s.k === 'x' ? toothName(s.t) : `${toothName(s.t)}${sideName(s.t, s.k[0])[0]}${POS[s.k[1]][0]}`);
@@ -2305,6 +2341,7 @@ function handleBopSpeech(raw, provisional, dry) {
     done.push('出血モードです。数字は歯の番号として聞いています（ポケットの深さは「🎤 ポケット」）');
   }
   if (dry) return { ops, done };
+  if (!toks.length && !done.length) { voice.lastGuide = []; voice.lastResult = '（声かけ・会話として無視）'; renderVoice(); return ops; }
   voice.lastGuide = bopGuide(ctx0, ctx, ops, done);
   if (undone && guideOn('enabled')) voice.lastGuide.push({ text: `${undone[0].t % 10}番、取り消しました` });
   if (ops.length) { voice.hist.push(ops); ed.undo = { kind: 'voice', ops }; ed.flash = '音声で入力しました'; }
@@ -2347,9 +2384,17 @@ function handleSpeech(raw, provisional = false, dry = false) {
   }
   if (voice.mode === 'bop' && (dry || (view.name === 'editor' && ed.exam))) return handleBopSpeech(raw, provisional, dry);
   if (!dry && (view.name !== 'editor' || !ed.exam)) return null;
-  const toks = tokenizeSpeech(raw);
+  let toks = tokenizeSpeech(raw);
+  // 「どの歯ですか」と聞いたあとに歯の名前だけ言ったら、さっきの言葉（「うら まえ 4」など）をその歯に入れる
+  const pend = !dry && voice.pendingSpec;
+  if (pend && Date.now() - pend.at <= PEND_MS && toks.length === 1 && toks[0].type === 'tooth') {
+    raw = `${toothName(toks[0].t)} ${pend.raw}`;
+    toks = tokenizeSpeech(raw);
+    voice.pendingSpec = null; // 仮入力で使って戻したときは、undoProv が元に戻す
+  }
   if (provisional && (!toks.length || toks.some((t) => ['undo', 'prev', 'next', 'stop'].includes(t.type)))) return null;
   if (!dry && ed.mode !== 'ppd') ed.mode = 'ppd';
+  const jump = !dry && isJump();
   const T = ed.exam.teeth;
   const basic = isBasic(ed.exam); // 基本検査：1歯1点。「右上6 5」で、その歯に入れる（近心・遠心などの言葉は使わない）
   const cur0 = ed.cur, complete0 = dry ? false : ppdComplete();
@@ -2359,10 +2404,15 @@ function handleSpeech(raw, provisional = false, dry = false) {
   const lastNum = toks.map((t) => t.type).lastIndexOf('num');
   const hasTooth = toks.some((t) => t.type === 'tooth' || t.ban);
   const fixes = []; // 1か所の言い直し（案内で確かめられるように読み上げる）
+  const echoes = []; // 飛び飛びで続けて入れた分の読み上げ
+  const seqOps = []; // 飛び飛びで、場所を言わずに順に入れた分
   let undone = null; // 「取り消し」で戻した分
   // 部位を指定して入れた直後は、歯の名前を省いた「遠心 4」「口蓋側 中央 3」も同じ歯に入れる（順に入れ始めたら解除）
-  const specTarget = () => (voice.specTooth ? { t: voice.specTooth.t, side: voice.specTooth.side, pos: null, named: true } : null);
-  const specDone = (s) => { voice.specTooth = { t: s.t, side: s.k[0] }; };
+  const sp = voice.specTooth;
+  const specLive = sp && (sp.kind === 'tap' || dry || Date.now() - (sp.at || 0) <= SPEC_KEEP_MS);
+  const specTarget = () => (specLive ? { t: sp.t, side: sp.side, pos: null, named: true } : null);
+  const specDone = (s, kind = 'spec') => { voice.specTooth = { t: s.t, side: s.k[0], at: Date.now(), kind }; };
+  let needTooth = false; // 場所の言葉はあるのに、歯が分からなかった
   const firstSiteWord = toks.findIndex((t) => t.type === 'side' || t.type === 'pos');
   let moved = false;
   const cur = () => ed.seq[ed.cur];
@@ -2401,8 +2451,12 @@ function handleSpeech(raw, provisional = false, dry = false) {
     }
     if (tk.type === 'tooth') { moveToTarget(); blocked = false; target = { t: tk.t, side: null, pos: null, named: true }; }
     else if (tk.type === 'badtooth' || tk.type === 'quad') { target = null; blocked = true; done.push('歯の名前が聞き取れませんでした（上下か番号が抜けています）。入力していません'); }
-    else if (tk.type === 'side') { if (blocked || basic) continue; target ||= specTarget() || { t: cur().t, side: null, pos: null }; target.side = tk.side; target.named = true; }
-    else if (tk.type === 'pos') { if (blocked || basic) continue; target ||= specTarget() || { t: cur().t, side: cur().k[0], pos: null }; target.pos = tk.pos; }
+    else if (tk.type === 'side' || tk.type === 'pos') {
+      if (blocked || basic) continue;
+      // 歯の名前がないときは、直前に言った歯・押して選んだ歯だけ。分からなければ入れずに「どの歯ですか」
+      if (!target) { target = specTarget(); if (!target) { blocked = true; needTooth = true; continue; } }
+      if (tk.type === 'side') { target.side = tk.side; target.named = true; } else target.pos = tk.pos;
+    }
     else if (tk.type === 'junk') {
       if (blocked || !toks.slice(toks.indexOf(tk) + 1).some((t) => t.type === 'num')) continue;
       target = null; blocked = true;
@@ -2423,6 +2477,12 @@ function handleSpeech(raw, provisional = false, dry = false) {
       }
       // 「5番 中央 4」「右上6 口蓋側 近心 5」のように1か所だけ言い直したときは、入れたあとカーソルを元の場所に戻す
       const back = target && (target.pos || (basic && target.named)) && tk.vals.length === 1 ? { cur: ed.cur, ended: voice.endedSite } : null;
+      // 飛び飛び：場所を言わずに数字だけのときは、直前に歯を言った・押して選んだ・続けて入れているときだけ
+      if (jump && !target && !(voice.specTooth && ['move', 'tap', 'seq'].includes(voice.specTooth.kind))) {
+        blocked = true;
+        done.push('場所が決まっていません。歯と場所を言うか、チャートを押してください。入力していません');
+        continue;
+      }
       moveToTarget();
       if (blocked) continue;
       if (back) {
@@ -2430,12 +2490,14 @@ function handleSpeech(raw, provisional = false, dry = false) {
         setField(s, 'ppd', tk.vals[0]);
         voice.lastSite = s;
         done.push(`${shortSite(s)} ${tk.vals[0]}`);
-        fixes.push(basic ? `${toothName(s.t)} ${tk.vals[0]}` : `${toothName(s.t)} ${s.k[0] !== ed.seq[back.cur].k[0] ? `${sideName(s.t, s.k[0])} ` : ''}${POS[s.k[1]]} ${tk.vals[0]}`); // 今と違う側なら側も言う
-        ed.cur = back.cur; voice.endedSite = back.ended;
+        fixes.push(basic ? `${toothName(s.t)} ${tk.vals[0]}` : `${toothName(s.t)} ${jump || s.k[0] !== ed.seq[back.cur].k[0] ? `${sideName(s.t, s.k[0])} ` : ''}${POS[s.k[1]]} ${tk.vals[0]}`); // 今と違う側なら側も言う（飛び飛びはいつも）
+        // 飛び飛びは、入れた所に残る（次も場所を言って入れる）。順には、元の場所に戻る
+        if (!jump) { ed.cur = back.cur; voice.endedSite = back.ended; }
         specDone(s);
         continue;
       }
       voice.specTooth = null; // 順に入れ始めた
+      const seq0 = ops.length;
       for (const n of tk.vals) {
         if (T[cur().t].missing) { const j = stepPPD(1); if (j === ed.cur) break; ed.cur = j; }
         const s = cur();
@@ -2445,6 +2507,11 @@ function handleSpeech(raw, provisional = false, dry = false) {
         done.push(`${shortSite(s)} ${n}`);
         const j = stepPPD(1);
         if (j === ed.cur) voice.endedSite = s; else ed.cur = j;
+      }
+      if (jump && ops.length > seq0) { // 飛び飛びで続けて入れた分（「5 5 5」は数字3つに分かれて届くので、まとめて最後に読み上げる）
+        seqOps.push(...ops.slice(seq0));
+        const l = ops[ops.length - 1];
+        specDone(ed.seq[ed.seq.findIndex((x) => x.t === l.t && x.k === l.k)] || cur(), 'seq');
       }
     } else if (tk.type === 'flag') {
       let s;
@@ -2461,13 +2528,19 @@ function handleSpeech(raw, provisional = false, dry = false) {
     else if (tk.type === 'stop') { if (!dry) voiceStop(); }
   }
   moveToTarget();
+  if (seqOps.length) { const f = seqOps[0]; echoes.push(`${toothName(f.t)} ${sideName(f.t, f.k[0])} ${POS[f.k[1]]}から ${seqOps.map((o) => T[o.t].ppd[o.k]).join('、')}`); }
   if (moved && !ops.length) {
     done.push(`${siteName(cur().t, cur().k)} へ移動しました`);
     // 移動しただけのあとは、続きの「中央」「プラス」も移動先に（前に直していた歯や、前に入れた部位に付けない）
-    specDone(cur()); voice.lastSite = null;
+    specDone(cur(), 'move'); voice.lastSite = null;
   }
+  if (needTooth && !ops.length) {
+    done.push('どの歯か聞き取れませんでした。歯の名前だけ言えば入ります。入力していません');
+    if (!dry) voice.pendingSpec = { raw, at: Date.now() }; // 仮入力のまま確定することがあるので、仮入力でも覚える（戻すときは undoProv が戻す）
+  } else if (!dry && ops.length) voice.pendingSpec = null;
   // 「さささん」「いよいよよ」「ミニに」のように、数字の音だけでできているのに読めなかったときは、黙って捨てずに言い直しを頼む（会話などは知らせない）
   if (!toks.length && !provisional && looksLikeNumbers(raw)) done.push('数字が聞き取れませんでした。もう一度言ってください');
+  const ignored = !toks.length && !done.length; // 声かけ・会話など、入力の言葉が1つもない（何も知らせない）
   if (dry) return { ops, done };
   // 部位を指定して入れ終えたら（最後の言葉が数字かプラスなど）、その場で文を確定させる。部位を変えるたびに新しい文で聞き直すため
   const lastTok = toks[toks.length - 1];
@@ -2476,7 +2549,8 @@ function handleSpeech(raw, provisional = false, dry = false) {
   // 聞き取れなかった言葉があり、文が言い終わっている（最後が数字やプラス）ときも、その場で区切って言い直しを待つ
   if (provisional && lastTok && (lastTok.type === 'num' || lastTok.type === 'flag') && done.some((d) => failSpeech(d))) voice.junkCut = true;
   voice.lastGuide = ppdGuide(cur0, ed.cur, ops, done, complete0, ppdComplete(), moved && !ops.length, moved);
-  if (fixes.length && guideOn('enabled')) voice.lastGuide.unshift({ text: fixes.join('、') });
+  if (jump && echoes.length) voice.lastGuide = voice.lastGuide.filter((g) => g.tone === 'buzz'); // 飛び飛びは道案内の代わりに、入った場所を返す
+  if ((fixes.length || echoes.length) && guideOn('enabled')) voice.lastGuide.unshift({ text: [...fixes, ...echoes].join('、') });
   if (undone && !ops.length && guideOn('enabled')) { // 取り消したら、どこから言い直すかを伝える
     const c = cur();
     voice.lastGuide = [{ text: `取り消しました。${c.t % 10}番 ${posText(c)}から` }];
@@ -2487,7 +2561,7 @@ function handleSpeech(raw, provisional = false, dry = false) {
     ed.undo = { kind: 'voice', ops };
     ed.flash = '音声で入力しました';
   }
-  const heard = `<b>「${esc(raw.trim())}」</b>`;
+  if (ignored) { voice.lastResult = '（声かけ・会話として無視）'; renderVoice(); return ops; } // 帯の表示も変えない
   voice.lastResult = done.length ? done.join('、') : '入力できる言葉がありませんでした';
   setVoiceResult(raw, done, voice.lastResult);
   touch();
