@@ -2827,7 +2827,7 @@ const STRIP = { w: 150, h: 42, lab: 17 };
 const isIOS = () => /iP(hone|ad|od)/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
 const stripScale = () => settings.stripScale || (isIOS() ? { x: 150 / 160, y: 42 / 44.5 } : { x: 1, y: 1 });
 const warekiShort = (iso) => { const [y, m, d] = (iso || '').split('-').map(Number); return y ? `R${y - 2018}.${m}.${d}` : ''; };
-function stripSVG(ex) {
+function stripMarkup(ex) { // 枠の中身（座標は mm、横150×縦42）
   const { w, h, lab } = STRIP, tw = (w - lab) / 16, cw = tw / 3, rh = h / 9;
   const T = ex.teeth, basic = isBasic(ex);
   const out = [];
@@ -2886,8 +2886,11 @@ function stripSVG(ex) {
       if (th.pus && th.pus[k]) out.push(`<polygon points="${f2(cx + cw / 2 - 1.1)},${f2(y + 0.3)} ${f2(cx + cw / 2 - 0.2)},${f2(y + 0.3)} ${f2(cx + cw / 2 - 0.65)},${f2(y + 1.1)}" fill="#b45309"/>`);
     });
   });
-  const sc = stripScale();
-  return `<svg class="strip-svg" xmlns="http://www.w3.org/2000/svg" width="${f2(w * sc.x)}mm" height="${f2(h * sc.y)}mm" viewBox="0 0 ${w} ${h}" font-family="-apple-system, 'Hiragino Sans', sans-serif" fill="#111">${out.join('')}</svg>`;
+  return out.join('');
+}
+function stripSVG(ex) {
+  const { w, h } = STRIP, sc = stripScale();
+  return `<svg class="strip-svg" xmlns="http://www.w3.org/2000/svg" width="${(w * sc.x).toFixed(2)}mm" height="${(h * sc.y).toFixed(2)}mm" viewBox="0 0 ${w} ${h}" font-family="-apple-system, 'Hiragino Sans', sans-serif" fill="#111">${stripMarkup(ex)}</svg>`;
 }
 const rulerSVG = (sc) => `<svg width="${(102 * sc.x).toFixed(2)}mm" height="${(5 * sc.y).toFixed(2)}mm" viewBox="-1 0 102 5" preserveAspectRatio="none"><line x1="0" y1="4.5" x2="100" y2="4.5" stroke="#333" stroke-width="0.3"/>${Array.from({ length: 11 }, (_, i) => `<line x1="${i * 10}" y1="${i % 5 ? 2.5 : 0.5}" x2="${i * 10}" y2="4.5" stroke="#333" stroke-width="0.3"/>`).join('')}</svg>`;
 const stripDateHTML = (p, ex) => `<div class="strip-date">${esc(warekiShort(ex.date))}${isBasic(ex) ? '　基本検査' : ''}<span class="strip-who">${esc(p.chartNo ? `No.${p.chartNo}` : '')}</span></div>`;
@@ -2900,53 +2903,76 @@ function stripSheetHTML(p, ex) {
     <div class="strip-ruler">${rulerSVG(sc)}<span>この線が 10cm なら、大きさは合っています</span></div>
   </div>`;
 }
-// 横150mm×縦94mm の紙（手で切った紙）に直接刷る。iPhone の一覧にこの大きさはないので「ポストカード」（100×148mm）を選び、
-// 紙を短い辺（94mm）からプリンターに入れる。枠は90度回して、紙の長い辺に沿わせる。
-// 紙を横長に持って読むとき：左＝プリンターに先に入る辺、上＝ページの右。位置は settings.stripOff（a＝左の余白、c＝ページの左から枠の下の線まで）
-const STRIP_OFF0 = { a: 0, c: 22 };
-const stripOff = () => ({ ...STRIP_OFF0, ...(settings.stripOff || {}) });
-function stripCardHTML(p, ex, test = false) {
-  const sc = stripScale(), off = stripOff();
-  const L = STRIP.w * sc.x; // 枠の長さ（紙の長い辺の向き）
-  const H = STRIP.h * sc.y + 7 + (test ? 11 : 0); // 回す前の高さ：物差し（試しのときだけ）＋日付＋枠
-  return `<div class="card-page" style="padding:${off.a}mm 0 0 ${off.c}mm">
-    <div class="card-hold" style="width:${H.toFixed(2)}mm;height:${L.toFixed(2)}mm">
-      <div class="card-rot" style="width:${L.toFixed(2)}mm;height:${H.toFixed(2)}mm;left:${H.toFixed(2)}mm">
-        ${test ? `<div class="strip-ruler cardr">${rulerSVG(sc)}<span>試し刷り：この線が 10cm、枠が 横150mm×縦42mm なら合っています</span></div>` : ''}
-        ${stripDateHTML(p, ex)}${stripSVG(ex)}
-      </div></div></div>`;
+// 横150mm×縦94mm の紙（手で切った紙）に刷る：枠を「ポストカード（100×148mm）1枚分の画像」にして、共有→プリントで刷る。
+// Safari の印刷は上下に約13mm の余白（URL・ページ番号）を取り、150mm の枠が入らないため（2026-11-14 iPhone で2ページに分かれた）。
+// 紙は短い辺から入れる。枠は90度回して、紙の長い辺いっぱい（画像の端から1mm）に置く。プリンターは画像を紙の刷れる範囲に縮めて刷るので、枠は約95%になる見込み。
+// 紙を横長に持って読むとき：左＝先に入る辺、上＝画像の右。上下の位置は settings.stripOff.c（mm、＋で上へ）
+const CARD = { w: 100, h: 148, pxmm: 12 };
+const stripOff = () => ({ c: 0, ...(settings.stripOff || {}) });
+function cardPageSVG(p, ex) {
+  const { w: PW, h: PH } = CARD, off = stripOff();
+  const L = PH - 2, k = L / STRIP.w, Hs = STRIP.h * k; // 枠は画像の長い辺いっぱい
+  const dateH = 6, blockH = dateH + Hs;
+  const X0 = (PW - blockH) / 2 + off.c; // 紙の幅の真ん中に置く
+  const date = `${esc(warekiShort(ex.date))}${isBasic(ex) ? '　基本検査' : ''}`;
+  const no = esc(p.chartNo ? `No.${p.chartNo}` : '');
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${PW * CARD.pxmm}" height="${PH * CARD.pxmm}" viewBox="0 0 ${PW} ${PH}">
+    <rect x="0" y="0" width="${PW}" height="${PH}" fill="#fff"/>
+    <g transform="translate(${(X0 + blockH).toFixed(2)} 1) rotate(90)" font-family="'Hiragino Sans', 'Hiragino Kaku Gothic ProN', sans-serif" fill="#111">
+      <text x="2" y="4.3" font-size="3.6" font-weight="700">${date}</text><text x="32" y="4.3" font-size="3.2" fill="#555">${no}</text>
+      <svg x="0" y="${dateH}" width="${L}" height="${Hs.toFixed(2)}" viewBox="0 0 ${STRIP.w} ${STRIP.h}">${stripMarkup(ex)}</svg>
+    </g></svg>`;
 }
-function setStripPage(css) {
-  let st = $('#pagestyle');
-  if (!st) { st = document.createElement('style'); st.id = 'pagestyle'; document.head.appendChild(st); }
-  st.textContent = `@media print { @page { ${css} } }`;
+async function cardPagePNG(p, ex) {
+  const url = URL.createObjectURL(new Blob([cardPageSVG(p, ex)], { type: 'image/svg+xml' }));
+  try {
+    const img = new Image();
+    await new Promise((res, rej) => { img.onload = res; img.onerror = () => rej(new Error('画像を作れませんでした')); img.src = url; });
+    const cv = document.createElement('canvas');
+    cv.width = CARD.w * CARD.pxmm; cv.height = CARD.h * CARD.pxmm;
+    const g = cv.getContext('2d');
+    g.fillStyle = '#fff'; g.fillRect(0, 0, cv.width, cv.height);
+    g.drawImage(img, 0, 0, cv.width, cv.height);
+    return await new Promise((res) => cv.toBlob(res, 'image/png'));
+  } finally { URL.revokeObjectURL(url); }
+}
+async function printStripCard(p, ex) {
+  openDialog(`<div class="dlg-body"><div class="spin"></div><p class="dlg-msg" style="text-align:center">印刷用の画像を作っています…</p></div>`);
+  let blob;
+  try { blob = await cardPagePNG(p, ex); } catch (e) { closeDialog(); await notify(String(e.message || e)); return; }
+  const file = new File([blob], `perio-${(p.chartNo || 'chart').replace(/[^\w-]/g, '')}-${ex.date || ''}.png`, { type: 'image/png' });
+  const view = URL.createObjectURL(blob);
+  openDialog(`<div class="dlg-body"><h2>150×94mm の紙に刷る</h2>
+    <div class="cardprev"><img src="${view}" alt="印刷する画像"></div>
+    <ol class="cardsteps"><li>下の「共有・プリント」→ 共有の画面で「<b>プリント</b>」</li><li>用紙サイズは「<b>ポストカード</b>」</li><li>紙は<b>短い辺から</b>プリンターに入れる</li></ol>
+    <div class="dlg-actions"><button class="btn" data-close>閉じる</button><button class="btn primary big" id="cardShare">共有・プリント</button></div></div>`);
+  const d = $('#dlg');
+  d.onclose = () => URL.revokeObjectURL(view);
+  $('#cardShare').onclick = () => saveFile(file, 'ペリオチャート').catch(() => {}); // 押した瞬間に共有の画面を出す（画像は先に作ってある）
 }
 function printStrip(p, ex) {
-  setStripPage('size: A4 portrait; margin: 15mm 15mm;'); // A4に刷って切る（iPhone は用紙の大きさの指定を使わない）
+  let st = $('#pagestyle');
+  if (!st) { st = document.createElement('style'); st.id = 'pagestyle'; document.head.appendChild(st); }
+  st.textContent = '@media print { @page { size: A4 portrait; margin: 15mm 15mm; } }'; // A4に刷って切る（iPhone は用紙の大きさの指定を使わない）
   document.body.classList.add('pr-portrait');
   $('#print').innerHTML = stripSheetHTML(p, ex);
   setTimeout(() => window.print(), 50);
 }
-function printStripCard(p, ex, test = false) {
-  setStripPage('size: 100mm 148mm; margin: 0;'); // ポストカード（iPhone では印刷の画面で「ポストカード」を選ぶ）
-  document.body.classList.add('pr-portrait');
-  $('#print').innerHTML = stripCardHTML(p, ex, test);
-  setTimeout(() => window.print(), 50);
-}
-// 設定画面：紙カルテ用の大きさと位置の合わせ
+// 設定画面：紙カルテ用の印刷（150×94mm の紙の位置／A4の大きさ）
 function stripSettingsHTML() {
   const sc = stripScale(), off = stripOff(), pct = (v) => `${(v * 100).toFixed(1)}%`;
-  return `<section class="card"><h2>紙カルテ用の印刷（大きさと位置）</h2>
-    <p class="sub">150×94mm の紙に刷るときは、印刷の画面で用紙サイズを「ポストカード」にして、紙を<b>短い辺から</b>プリンターに入れます。まず「試しに刷る」で1枚刷って、枠の横と縦を測ってください。</p>
-    <p class="sub">今の倍率：横 ${pct(sc.x)}・縦 ${pct(sc.y)}${settings.stripScale ? '' : (isIOS() ? '（iPhone の初期値）' : '')}</p>
+  return `<section class="card"><h2>紙カルテ用の印刷</h2>
+    <h3 class="exh">150×94mm の紙（画像にして刷る）</h3>
+    <p class="sub">共有の画面で「プリント」、用紙サイズは「ポストカード」、紙は短い辺から入れます。枠が紙の上か下に寄るときは、ここで動かします（紙を横長に、文字が読める向きで持ったとき）。</p>
+    <div class="row-tools stmove"><button class="btn" data-mv="up">↑ 上へ 1mm</button><button class="btn" data-mv="down">↓ 下へ 1mm</button>
+      <span class="sub">いま：${off.c === 0 ? '真ん中' : off.c > 0 ? `上へ ${off.c}mm` : `下へ ${-off.c}mm`}</span>
+      <button class="btn primary" id="stprint">試しに刷る</button></div>
+    <h3 class="exh">A4に刷って切る（枠 横${STRIP.w}mm×縦${STRIP.h}mm）</h3>
+    <p class="sub">今の倍率：横 ${pct(sc.x)}・縦 ${pct(sc.y)}${settings.stripScale ? '' : (isIOS() ? '（iPhone の初期値）' : '')}。刷れた枠の横と縦を測って入れると、次から合います。</p>
     <div class="row-tools"><label class="hfield">刷れた枠の横 <input id="stw" type="number" inputmode="decimal" step="0.5" class="text" style="width:90px" placeholder="${STRIP.w}"> mm</label>
       <label class="hfield">縦 <input id="sth" type="number" inputmode="decimal" step="0.5" class="text" style="width:80px" placeholder="${STRIP.h}"> mm</label>
-      <button class="btn primary" id="stfit">大きさを合わせる</button></div>
-    <h3 class="exh">枠の位置（紙を横長に、文字が読める向きで持ったとき）</h3>
-    <div class="row-tools stmove"><button class="btn" data-mv="up">↑ 上へ</button><button class="btn" data-mv="down">↓ 下へ</button>
-      <button class="btn" data-mv="left">← 左へ</button><button class="btn" data-mv="right">→ 右へ</button>
-      <span class="sub">1回で 1mm 動きます（初期の位置から：右へ ${off.a - STRIP_OFF0.a}mm・上へ ${off.c - STRIP_OFF0.c}mm）</span></div>
-    <div class="row-tools"><button class="btn primary" id="stprint">試しに刷る（150×94mm の紙）</button><button class="btn" id="stprintA4">試しに刷る（A4）</button><button class="btn" id="streset">初期値に戻す</button></div></section>`;
+      <button class="btn primary" id="stfit">大きさを合わせる</button><button class="btn" id="stprintA4">試しに刷る（A4）</button></div>
+    <div class="row-tools"><button class="btn" id="streset">位置と大きさを初期値に戻す</button></div></section>`;
 }
 function bindStripSettings() {
   $('#stfit').onclick = async () => {
@@ -2959,24 +2985,22 @@ function bindStripSettings() {
     showSettings();
     notify('倍率を直しました。もう一度刷って、枠が横150mm×縦42mm になったか確かめてください。');
   };
-  // 紙を横長に持ったとき：上下＝ページの左右（上＝ページの右）、左右＝ページの上下（左＝ページの上）
   document.querySelectorAll('[data-mv]').forEach((b) => (b.onclick = async () => {
     const off = stripOff();
-    const d = { up: ['c', 1], down: ['c', -1], left: ['a', -1], right: ['a', 1] }[b.dataset.mv];
-    off[d[0]] = Math.max(0, off[d[0]] + d[1]);
+    off.c = Math.max(-20, Math.min(20, off.c + (b.dataset.mv === 'up' ? 1 : -1)));
     settings.stripOff = off;
     await saveSettings();
     showSettings();
   }));
   $('#streset').onclick = async () => { delete settings.stripScale; delete settings.stripOff; await saveSettings(); showSettings(); };
-  $('#stprint').onclick = () => { const { patient, exams } = makeDemo(); printStripCard(patient, exams[0], true); };
+  $('#stprint').onclick = () => { const { patient, exams } = makeDemo(); printStripCard(patient, exams[0]); };
   $('#stprintA4').onclick = () => { const { patient, exams } = makeDemo(); printStrip(patient, exams[0]); };
 }
 // 印刷ボタン：どの形で印刷するか選ぶ
 function choosePrint(p, ex) {
   openDialog(`<div class="dlg-body"><h2>印刷</h2>
     <div class="prchoice">
-      <button class="btn big" id="prCard"><b>紙カルテ用：150×94mm の紙</b><small>用紙サイズは「ポストカード」、紙は短い辺から入れる</small></button>
+      <button class="btn big" id="prCard"><b>紙カルテ用：150×94mm の紙</b><small>画像にして共有→プリント。用紙サイズは「ポストカード」、紙は短い辺から</small></button>
       <button class="btn big" id="prStrip"><b>紙カルテ用：A4に刷って切る</b><small>四隅の目印で切る</small></button>
       <button class="btn big" id="prA4"><b>検査表（A4横）</b><small>チャート・集計・凡例</small></button>
     </div>
@@ -3928,8 +3952,7 @@ async function openPasteFromShortcut() {
     const { patient, exams } = makeDemo();
     settings.clinicName = '（医院名）';
     document.body.classList.add('print-sample');
-    if (location.search.includes('card')) { document.body.classList.add('pr-portrait', 'card-sample'); $('#print').innerHTML = stripCardHTML(patient, exams[0], location.search.includes('test')); }
-    else if (location.search.includes('strip')) { document.body.classList.add('pr-portrait', 'strip-sample'); $('#print').innerHTML = stripSheetHTML(patient, exams[0]); }
+    if (location.search.includes('strip')) { document.body.classList.add('pr-portrait', 'strip-sample'); $('#print').innerHTML = stripSheetHTML(patient, exams[0]); }
     else if (location.search.includes('trend')) { setPage('portrait'); document.body.classList.add('pr-portrait'); $('#print').innerHTML = trendSheetHTML(patient, exams); }
     else { setPage('landscape'); $('#print').innerHTML = printHTML(patient, exams[0]); }
     return;

@@ -813,12 +813,8 @@ body.pr-portrait #print .chart i.dif { font-size: 6pt; }
 .prchoice { display: grid; gap: 10px; margin: 6px 0 4px; }
 .prchoice .btn { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; padding: 12px 16px; height: auto; }
 .prchoice small { font-weight: 400; color: #667; font-size: 13px; }
-/* 150×94mm の紙に刷る（ポストカードとして、枠を90度回す） */
-.card-page { box-sizing: border-box; }
-.card-hold { position: relative; }
-.card-rot { position: absolute; top: 0; transform: rotate(90deg); transform-origin: 0 0; }
-.card-rot .strip-date { margin: 0 0 1.5mm 2mm; height: 5.5mm; }
-.strip-ruler.cardr { margin: 0 0 1mm 2mm; display: flex; align-items: flex-end; gap: 3mm; } .strip-ruler.cardr svg { margin: 0; flex: none; } .strip-ruler.cardr span { font-size: 6.5pt; line-height: 1.2; }
-.print-sample.card-sample #print { width: auto; padding: 10mm; background: #e5e7eb; }
-.print-sample.card-sample #print .card-page { background: #fff; width: 100mm; height: 148mm; margin: 0 auto; }
-.stmove .sub { margin-left: 6px; }
+/* 150×94mm の紙に刷る（画像にして共有→プリント） */
+.cardprev { background: #e5e7eb; border-radius: 10px; padding: 10px; text-align: center; margin: 4px 0 8px; }
+.cardprev img { height: 300px; max-width: 100%; box-shadow: 0 1px 4px rgba(0,0,0,.25); background: #fff; }
+.cardsteps { margin: 0 0 6px 1.2em; padding: 0; font-size: 15px; line-height: 1.7; }
+.stmove .sub { margin: 0 6px; }
