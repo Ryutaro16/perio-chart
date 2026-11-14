@@ -2901,8 +2901,8 @@ const STRIP = { w: 150, h: 42, lab: 17 };
 const isIOS = () => /iP(hone|ad|od)/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
 const stripScale = () => settings.stripScale || (isIOS() ? { x: 150 / 160, y: 42 / 44.5 } : { x: 1, y: 1 });
 const warekiShort = (iso) => { const [y, m, d] = (iso || '').split('-').map(Number); return y ? `R${y - 2018}.${m}.${d}` : ''; };
-function stripMarkup(ex) { // 枠の中身（座標は mm、横150×縦42）
-  const { w, h, lab } = STRIP, tw = (w - lab) / 16, cw = tw / 3, rh = h / 9;
+function stripMarkup(ex, o = {}) { // 枠の中身（座標は mm、横150×縦42）。o.values＝線・見出し・歯の番号を描かず、数字・出血などだけ（欄が印刷されたシールに重ねて刷る）
+  const { w, h, lab } = STRIP, tw = (w - lab) / 16, cw = tw / 3, rh = h / 9, V = !!o.values;
   const T = ex.teeth, basic = isBasic(ex);
   const out = [];
   const f2 = (n) => n.toFixed(2);
@@ -2910,6 +2910,7 @@ function stripMarkup(ex) { // 枠の中身（座標は mm、横150×縦42）
   const text = (x, y, str, size, extra = '') => out.push(`<text x="${f2(x)}" y="${f2(y)}" font-size="${size}" text-anchor="middle" dominant-baseline="central" ${extra}>${esc(String(str))}</text>`);
   const tx = (i) => lab + i * tw; // i 番目の歯の左端
   const sub = lab * 0.48; // 見出しの「ポケット」と「頬側・口蓋」の境
+  if (!V) {
   // 外枠と横の線
   out.push(`<rect x="0" y="0" width="${w}" height="${h}" fill="none" stroke="#222" stroke-width="0.35"/>`);
   for (let r = 1; r < 9; r++) {
@@ -2930,6 +2931,8 @@ function stripMarkup(ex) { // 枠の中身（座標は mm、横150×縦42）
     if (i > 0 && i < 16) line(x, 0, x, h, i === 8 ? 0.45 : 0.2);
     if (i < 16) for (const j of [1, 2]) for (const r of [1, 2, 6, 7]) line(x + j * cw, r * rh, x + j * cw, (r + 1) * rh, 0.12, 'stroke-dasharray="0.5 0.5"');
   }
+  }
+  if (o.date) text(lab / 2, 4.5 * rh, o.date, 2.3, 'font-weight="700"'); // 歯の番号の段の見出し（空いているマス）に日付
   const rows = [
     { r: 0, row: UPPER, kind: 'mob' }, { r: 1, row: UPPER, kind: 'ppd', side: 'b' }, { r: 2, row: UPPER, kind: 'ppd', side: 'l' },
     { r: 3, row: UPPER, kind: 'pl' }, { r: 4, row: UPPER, kind: 'num' }, { r: 5, row: LOWER, kind: 'pl' },
@@ -2937,14 +2940,14 @@ function stripMarkup(ex) { // 枠の中身（座標は mm、横150×縦42）
   ];
   for (const { r, row, kind, side } of rows) row.forEach((t, i) => {
     const x = tx(i), y = r * rh, th = T[t];
-    if (kind === 'num') { text(x + tw / 2, y + rh / 2, t % 10, 2.4); return; }
+    if (kind === 'num') { if (!V) text(x + tw / 2, y + rh / 2, t % 10, 2.4); return; }
     if (kind === 'pl') { // 紙と同じ×の枠。プラークの付いた面を薄く塗る
       const up = isUpper(t), rt = isPtRight(t);
       const map = { top: up ? 'b' : 'l', bottom: up ? 'l' : 'b', left: rt ? 'd' : 'm', right: rt ? 'm' : 'd' };
       const P = (a, b) => `${f2(a)},${f2(b)}`, c = P(x + tw / 2, y + rh / 2);
       const tri = { top: [P(x, y), P(x + tw, y)], bottom: [P(x, y + rh), P(x + tw, y + rh)], left: [P(x, y), P(x, y + rh)], right: [P(x + tw, y), P(x + tw, y + rh)] };
       for (const k of Object.keys(tri)) if (!basic && !th.missing && th.pl && th.pl[map[k]]) out.push(`<polygon points="${tri[k].join(' ')} ${c}" fill="#bbb"/>`);
-      line(x, y, x + tw, y + rh, 0.12); line(x + tw, y, x, y + rh, 0.12);
+      if (!V) { line(x, y, x + tw, y + rh, 0.12); line(x + tw, y, x, y + rh, 0.12); }
       return;
     }
     if (th.missing) { if (kind === 'ppd') line(x + 0.6, y + rh - 0.6, x + tw - 0.6, y + 0.6, 0.3); return; }
@@ -3075,15 +3078,148 @@ function bindStripSettings() {
   $('#stprint').onclick = () => { const { patient, exams } = makeDemo(); printStripCard(patient, exams[0]); };
   $('#stprintA4').onclick = () => { const { patient, exams } = makeDemo(); printStrip(patient, exams[0]); };
 }
+// シール用紙（横182.5×縦257.5mm、ほぼB5）：「精密・再評価検査」の欄（横150×縦42mm）が印刷されたシールが縦に5枚。
+// 欄の線はもう印刷してあるので、数字・出血・動揺度・欠損などだけを、選んだ1枚に重ねて刷る。画像にして共有→プリント（用紙サイズ B5）。
+// 位置：sheetGeo＝用紙の上の端→1枚目の欄の上の線・左の端→欄の左の線・欄の上の線→次の欄の上の線（mm。初期値は 2026-11-14 の写真からの推定）
+// sheetCal＝プリンターのずれの補正（画像の中で、用紙の真ん中を中心に sx・sy 倍し、dx・dy ずらす）。試し刷りで測った値から合わせる
+const SHEET = { w: 182.5, h: 257.5, n: 5, pxmm: 12 };
+const SHEET_GEO0 = { top: 8.2, left: 16.2, pitch: 47.4 };
+const sheetGeo = () => ({ ...SHEET_GEO0, ...(settings.sheetGeo || {}) });
+const sheetCal = () => ({ sx: 1, sy: 1, dx: 0, dy: 0, ...(settings.sheetCal || {}) });
+function sheetSVG(items, o = {}) { // items：[{ slot: 0〜4, ex }]。o.test＝欄の線も描く（試し刷り）、o.ghost＝欄を薄く描く（画面の見本）
+  const g = sheetGeo(), c = sheetCal(), Cx = SHEET.w / 2, Cy = SHEET.h / 2;
+  const f = (n) => (+n).toFixed(3);
+  const empty = { teeth: Object.fromEntries([...UPPER, ...LOWER].map((t) => [t, { ppd: {}, bop: {}, pus: {}, pl: {} }])) };
+  const body = [];
+  for (let i = 0; i < SHEET.n; i++) {
+    const it = items.find((x) => x.slot === i), y = g.top + i * g.pitch;
+    const inner = [];
+    if (o.ghost) inner.push(`<g opacity="0.22">${stripMarkup(empty)}</g>`);
+    if (o.test) inner.push(stripMarkup(it ? it.ex : empty, { date: it && it.ex.date ? warekiShort(it.ex.date) : '' }));
+    else if (it) inner.push(stripMarkup(it.ex, { values: true, date: warekiShort(it.ex.date) + (isBasic(it.ex) ? ' 基本' : '') }));
+    if (inner.length) body.push(`<svg x="${f(g.left)}" y="${f(y)}" width="${STRIP.w}" height="${STRIP.h}" viewBox="0 0 ${STRIP.w} ${STRIP.h}" overflow="visible">${inner.join('')}</svg>`);
+  }
+  if (o.test) { // 物差し（10cm）と説明
+    const y5 = g.top + (SHEET.n - 1) * g.pitch + STRIP.h + 3, x0 = g.left;
+    body.push(`<g stroke="#333" stroke-width="0.3"><line x1="${f(x0)}" y1="${f(y5 + 4)}" x2="${f(x0 + 100)}" y2="${f(y5 + 4)}"/>${Array.from({ length: 11 }, (_, i) => `<line x1="${f(x0 + i * 10)}" y1="${f(y5 + (i % 5 ? 2 : 0))}" x2="${f(x0 + i * 10)}" y2="${f(y5 + 4)}"/>`).join('')}</g>`);
+    body.push(`<text x="${f(x0 + 103)}" y="${f(y5 + 3.5)}" font-size="2.6">← 10cm（試し刷り）</text>`);
+  }
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${Math.round(SHEET.w * SHEET.pxmm)}" height="${Math.round(SHEET.h * SHEET.pxmm)}" viewBox="0 0 ${SHEET.w} ${SHEET.h}" font-family="'Hiragino Sans', 'Hiragino Kaku Gothic ProN', sans-serif" fill="#111">
+    <rect x="0" y="0" width="${SHEET.w}" height="${SHEET.h}" fill="#fff"/>
+    <g transform="translate(${f(Cx + c.dx)} ${f(Cy + c.dy)}) scale(${f(c.sx)} ${f(c.sy)}) translate(${f(-Cx)} ${f(-Cy)})">${body.join('')}</g></svg>`;
+}
+async function svgToPNG(svg, wpx, hpx) {
+  const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
+  try {
+    const img = new Image();
+    await new Promise((res, rej) => { img.onload = res; img.onerror = () => rej(new Error('画像を作れませんでした')); img.src = url; });
+    const cv = document.createElement('canvas');
+    cv.width = wpx; cv.height = hpx;
+    const g = cv.getContext('2d');
+    g.fillStyle = '#fff'; g.fillRect(0, 0, cv.width, cv.height);
+    g.drawImage(img, 0, 0, cv.width, cv.height);
+    return await new Promise((res) => cv.toBlob(res, 'image/png'));
+  } finally { URL.revokeObjectURL(url); }
+}
+const sheetPNG = (items, o) => svgToPNG(sheetSVG(items, o), Math.round(SHEET.w * SHEET.pxmm), Math.round(SHEET.h * SHEET.pxmm));
+const SHEET_STEPS = `<ol class="cardsteps"><li>「共有・プリント」→ 共有の画面で「<b>プリント</b>」</li><li>用紙サイズは「<b>B5</b>」</li><li>シール用紙は、<b>1枚目（いちばん上）の欄が先に入る向き</b>で入れる（向きは試し刷りで確かめる）</li></ol>`;
+async function shareSheet(items, o, title, note, after) {
+  openDialog(`<div class="dlg-body"><div class="spin"></div><p class="dlg-msg" style="text-align:center">印刷用の画像を作っています…</p></div>`);
+  let blob;
+  try { blob = await sheetPNG(items, o); } catch (e) { closeDialog(); await notify(String(e.message || e)); return; }
+  const file = new File([blob], `perio-sheet-${Date.now()}.png`, { type: 'image/png' });
+  const view = URL.createObjectURL(blob);
+  openDialog(`<div class="dlg-body"><h2>${title}</h2>${note || ''}
+    <div class="cardprev sheetprev"><img src="${view}" alt="印刷する画像"></div>${SHEET_STEPS}
+    <div class="dlg-actions"><button class="btn" data-close>閉じる</button><button class="btn primary big" id="sheetShare">共有・プリント</button></div></div>`);
+  $('#dlg').onclose = () => URL.revokeObjectURL(view);
+  $('#sheetShare').onclick = () => { saveFile(file, 'ペリオチャート').catch(() => {}); if (after) after(); };
+}
+function printSheet(p, ex) { // どのシールに刷るか選ぶ（使い残しのシールにも刷れる）
+  let slot = Math.max(0, Math.min(SHEET.n - 1, (settings.sheetNext || 1) - 1));
+  const draw = () => {
+    $('#sheetSlots').innerHTML = Array.from({ length: SHEET.n }, (_, i) => `<button class="btn${i === slot ? ' primary' : ''}" data-slot="${i}">${i + 1}枚目</button>`).join('');
+    $('#sheetMini').innerHTML = sheetSVG([{ slot, ex }], { ghost: true }).replace(/ width="\d+" height="\d+"/, ' class="sheetmini"');
+    document.querySelectorAll('[data-slot]').forEach((b) => (b.onclick = () => { slot = +b.dataset.slot; draw(); }));
+  };
+  openDialog(`<div class="dlg-body"><h2>シール用紙に刷る</h2>
+    <p class="sub">どのシールに刷りますか？（上から数えて。使い残しのシールにも刷れます）</p>
+    <div class="row-tools sheetslots" id="sheetSlots"></div>
+    <div class="cardprev" id="sheetMini"></div>
+    <p class="sub">欄の線・歯の番号は用紙に印刷してあるので、数字・出血（赤丸）・動揺度・欠損（斜線）・プラークと、空いているマスに日付だけを刷ります。</p>
+    <div class="dlg-actions"><button class="btn" data-close>やめる</button><button class="btn primary big" id="sheetGo">印刷の画像を作る</button></div></div>`);
+  draw();
+  $('#sheetGo').onclick = () => shareSheet([{ slot, ex }], {}, `シール用紙の${slot + 1}枚目に刷る`, '', async () => { settings.sheetNext = (slot + 1) % SHEET.n + 1; await saveSettings(); });
+}
+// 設定画面：シール用紙の位置合わせ
+function sheetSettingsHTML() {
+  const g = sheetGeo(), c = sheetCal();
+  const num = (id, v, w = 80) => `<input id="${id}" type="number" inputmode="decimal" step="0.1" class="text" style="width:${w}px" value="${v}">`;
+  const blank = (id, ph) => `<input id="${id}" type="number" inputmode="decimal" step="0.5" class="text" style="width:80px" placeholder="${ph}">`;
+  const mv = (v, a, b) => (Math.abs(v) < 0.05 ? 'そのまま' : `${v > 0 ? a : b} ${Math.abs(v).toFixed(1)}mm`);
+  return `<section class="card"><h2>シール用紙（B5・5枚）に刷る</h2>
+    <p class="sub">欄が印刷されたシール用紙（横182.5×縦257.5mm）に、数字などだけを重ねて刷ります。共有の画面で「プリント」、用紙サイズは「B5」。</p>
+    <h3 class="exh">① 用紙の欄の位置（定規で測る）</h3>
+    <div class="row-tools"><label class="hfield">上の端 → 1枚目の欄の上の線 ${num('sgTop', g.top)} mm</label>
+      <label class="hfield">左の端 → 欄の左の線 ${num('sgLeft', g.left)} mm</label>
+      <label class="hfield">欄の上の線 → 次の欄の上の線 ${num('sgPitch', g.pitch)} mm</label>
+      <button class="btn primary" id="sgSave">保存</button></div>
+    <h3 class="exh">② 試し刷り（普通紙に刷って、シール用紙と重ねて光に透かす）</h3>
+    <div class="row-tools"><button class="btn primary" id="sgTest">試しに刷る</button></div>
+    <p class="sub">試し刷りの1枚目の欄を測って入れると、次から合います（分からない所は空けたままでよい）。</p>
+    <div class="row-tools"><label class="hfield">欄の横 ${blank('scW', STRIP.w)} mm</label><label class="hfield">縦 ${blank('scH', STRIP.h)} mm</label>
+      <label class="hfield">上の端から ${blank('scT', g.top)} mm</label><label class="hfield">左の端から ${blank('scL', g.left)} mm</label>
+      <button class="btn primary" id="scFit">合わせる</button></div>
+    <h3 class="exh">③ 少しずつ動かす</h3>
+    <div class="row-tools stmove"><button class="btn" data-smv="up">↑ 0.5mm</button><button class="btn" data-smv="down">↓ 0.5mm</button><button class="btn" data-smv="left">← 0.5mm</button><button class="btn" data-smv="right">→ 0.5mm</button></div>
+    <p class="sub">いま：上下 ${mv(-c.dy, '上へ', '下へ')}・左右 ${mv(c.dx, '右へ', '左へ')}・大きさ 横 ${(c.sx * 100).toFixed(1)}%・縦 ${(c.sy * 100).toFixed(1)}%</p>
+    <div class="row-tools"><button class="btn" id="sgReset">シール用紙の位置を初期値に戻す</button></div></section>`;
+}
+function bindSheetSettings() {
+  const val = (id) => parseFloat($('#' + id).value);
+  const save = async (msg) => { await saveSettings(); showSettings(); if (msg) notify(msg); };
+  $('#sgSave').onclick = async () => {
+    const top = val('sgTop'), left = val('sgLeft'), pitch = val('sgPitch');
+    if (!(top >= 0 && top < 40 && left >= 0 && left < 40 && pitch >= STRIP.h && pitch < 60)) { await notify('mm で入れてください（上の端はおよそ8、左の端はおよそ16、次の欄まではおよそ47）。'); return; }
+    settings.sheetGeo = { top, left, pitch };
+    await save('用紙の欄の位置を保存しました。');
+  };
+  $('#sgTest').onclick = () => { const { exams } = makeDemo(); shareSheet([0, 1, 2, 3, 4].map((slot) => ({ slot, ex: exams[0] })), { test: true }, 'シール用紙の試し刷り',
+    '<p class="sub">普通紙に刷り、シール用紙と重ねて光に透かして、線が重なるか見ます。ずれていたら1枚目の欄を測って、設定の②に入れます。</p>'); };
+  $('#scFit').onclick = async () => {
+    // 刷れた位置＝O＋k×(画像の中の位置)。測った値から k（プリンターの倍率）と O（ずれ）を出し、ちょうどになる補正を逆算する
+    const g = sheetGeo(), c = sheetCal(), Cx = SHEET.w / 2, Cy = SHEET.h / 2;
+    const W = val('scW'), H = val('scH'), T = val('scT'), L = val('scL');
+    const ok = (v, t) => v > t * 0.7 && v < t * 1.3;
+    if ((W && !ok(W, STRIP.w)) || (H && !ok(H, STRIP.h)) || (T && !(T > 0 && T < 40)) || (L && !(L > 0 && L < 40)) || !(W || H || T || L)) { await notify(`試し刷りの1枚目の欄を mm で入れてください（横はおよそ${STRIP.w}、縦はおよそ${STRIP.h}）。`); return; }
+    const kx = W ? W / (STRIP.w * c.sx) : 1 / c.sx, ky = H ? H / (STRIP.h * c.sy) : (W ? kx : 1 / c.sy); // 縦を測っていなければ横と同じ倍率とみなす
+    const n = { ...c, sx: 1 / kx, sy: 1 / ky };
+    const imgX = Cx + c.dx + c.sx * (g.left - Cx), imgY = Cy + c.dy + c.sy * (g.top - Cy); // 1枚目の欄の左上（画像の中）
+    if (L) { const Ox = L - kx * imgX; n.dx = (g.left - Ox) / kx - Cx - n.sx * (g.left - Cx); } else n.dx = c.dx;
+    if (T) { const Oy = T - ky * imgY; n.dy = (g.top - Oy) / ky - Cy - n.sy * (g.top - Cy); } else n.dy = c.dy;
+    settings.sheetCal = n;
+    await save('補正しました。もう一度試し刷りをして、重なるか確かめてください。');
+  };
+  document.querySelectorAll('[data-smv]').forEach((b) => (b.onclick = async () => {
+    const c = sheetCal(), d = b.dataset.smv;
+    if (d === 'up') c.dy -= 0.5; if (d === 'down') c.dy += 0.5; if (d === 'left') c.dx -= 0.5; if (d === 'right') c.dx += 0.5;
+    c.dx = Math.max(-20, Math.min(20, c.dx)); c.dy = Math.max(-20, Math.min(20, c.dy));
+    settings.sheetCal = c;
+    await save();
+  }));
+  $('#sgReset').onclick = async () => { delete settings.sheetGeo; delete settings.sheetCal; await save(); };
+}
 // 印刷ボタン：どの形で印刷するか選ぶ
 function choosePrint(p, ex) {
   openDialog(`<div class="dlg-body"><h2>印刷</h2>
     <div class="prchoice">
+      <button class="btn big" id="prSheet"><b>シール用紙（B5・5枚）</b><small>欄が印刷されたシールに、数字などだけを重ねて刷る。用紙サイズは「B5」</small></button>
       <button class="btn big" id="prCard"><b>紙カルテ用：150×94mm の紙</b><small>画像にして共有→プリント。用紙サイズは「ポストカード」、紙は短い辺から</small></button>
       <button class="btn big" id="prStrip"><b>紙カルテ用：A4に刷って切る</b><small>四隅の目印で切る</small></button>
       <button class="btn big" id="prA4"><b>検査表（A4横）</b><small>チャート・集計・凡例</small></button>
     </div>
     <div class="dlg-actions"><button class="btn" data-close>やめる</button></div></div>`);
+  $('#prSheet').onclick = () => { closeDialog(); printSheet(p, ex); };
   $('#prCard').onclick = () => { closeDialog(); printStripCard(p, ex); };
   $('#prStrip').onclick = () => { closeDialog(); printStrip(p, ex); };
   $('#prA4').onclick = () => { closeDialog(); printExam(p, ex); };
@@ -3294,6 +3430,7 @@ async function showSettings() {
     <header class="bar"><button class="btn ghost" id="setback">‹ ${settingsFrom ? SETTINGS_BACK[settingsFrom.name] : '患者一覧'}</button><h1>設定・バックアップ</h1><div class="grow"></div></header>
     <main class="wrap stack">
       <section class="card"><h2>医院名（印刷に表示されます）</h2><input id="clinic" class="text" value="${esc(settings.clinicName)}" placeholder="例：〇〇歯科医院" autocomplete="off"></section>
+      ${sheetSettingsHTML()}
       ${stripSettingsHTML()}
       <section class="card"><h2>ポケットを測る順番</h2>
         <p class="sub">新しい検査で検査者を選ぶと、その人の順番で入力できます（音声入力も同じ順番）。登録していない人は「いつもの順番」です。</p>
@@ -3324,6 +3461,7 @@ async function showSettings() {
     </main>`;
   $('#setback').onclick = leaveSettings;
   $('#clinic').onchange = (e) => { settings.clinicName = e.target.value.trim(); saveSettings(); };
+  bindSheetSettings();
   bindStripSettings();
   document.querySelectorAll('[data-ord]').forEach((b) => (b.onclick = () => orderDialog(b.dataset.ord)));
   document.querySelectorAll('[data-exdel]').forEach((b) => (b.onclick = async () => {
@@ -4031,7 +4169,8 @@ async function openPasteFromShortcut() {
     const { patient, exams } = makeDemo();
     settings.clinicName = '（医院名）';
     document.body.classList.add('print-sample');
-    if (location.search.includes('strip')) { document.body.classList.add('pr-portrait', 'strip-sample'); $('#print').innerHTML = stripSheetHTML(patient, exams[0]); }
+    if (location.search.includes('sheet')) { document.body.classList.add('sheet-sample'); $('#print').innerHTML = sheetSVG(location.search.includes('test') ? [0, 1, 2, 3, 4].map((slot) => ({ slot, ex: exams[0] })) : [{ slot: 1, ex: exams[0] }], { test: location.search.includes('test'), ghost: location.search.includes('ghost') }).replace(/ width="\d+" height="\d+"/, ' width="182.5mm" height="257.5mm"'); }
+    else if (location.search.includes('strip')) { document.body.classList.add('pr-portrait', 'strip-sample'); $('#print').innerHTML = stripSheetHTML(patient, exams[0]); }
     else if (location.search.includes('trend')) { setPage('portrait'); document.body.classList.add('pr-portrait'); $('#print').innerHTML = trendSheetHTML(patient, exams); }
     else { setPage('landscape'); $('#print').innerHTML = printHTML(patient, exams[0]); }
     return;
