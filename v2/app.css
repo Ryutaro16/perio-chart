@@ -796,15 +796,29 @@ body.pr-portrait #print .chart i.dif { font-size: 6pt; }
   #paperp, #addp { flex: 1 1 0; }
 }
 /* 紙カルテ用（15×4.2cm） */
-.strip-page { width: 150mm; height: 94mm; box-sizing: border-box; padding-top: 9mm; overflow: hidden; }
-.strip-date { font-size: 10pt; font-weight: 600; margin: 0 0 1.5mm 19mm; display: flex; gap: 6mm; }
+.strip-page { padding: 6mm 0 0 6mm; }
+.strip-date { font-size: 10pt; font-weight: 600; margin: 0 0 1.5mm 0; display: flex; gap: 6mm; }
 .strip-who { font-weight: 400; color: #555; }
-.strip-box { position: relative; width: 150mm; height: 42mm; }
-.strip-svg { display: block; width: 150mm; height: 42mm; }
-.strip-ruler { margin: 9mm 0 0 19mm; font-size: 6.5pt; color: #555; }
+.strip-box { position: relative; display: inline-block; }
+.strip-svg { display: block; }
+.strip-box .cm { position: absolute; width: 4mm; height: 4mm; border-color: #888; border-style: solid; border-width: 0; }
+.strip-box .cm.tl { left: -5mm; top: -5mm; border-right-width: .2mm; border-bottom-width: .2mm; }
+.strip-box .cm.tr { right: -5mm; top: -5mm; border-left-width: .2mm; border-bottom-width: .2mm; }
+.strip-box .cm.bl { left: -5mm; bottom: -5mm; border-right-width: .2mm; border-top-width: .2mm; }
+.strip-box .cm.br { right: -5mm; bottom: -5mm; border-left-width: .2mm; border-top-width: .2mm; }
+.strip-ruler { margin-top: 10mm; font-size: 7pt; color: #555; }
 .strip-ruler svg { display: block; margin: 0 0 1mm -1mm; }
 .print-sample.strip-sample #print { width: auto; padding: 10mm; background: #e5e7eb; }
-.print-sample.strip-sample #print .strip-page { background: #fff; margin: 0 auto; box-shadow: 0 0 0 .3mm #999; }
+.print-sample.strip-sample #print .strip-page { background: #fff; width: 180mm; margin: 0 auto; padding: 8mm 15mm 10mm; }
 .prchoice { display: grid; gap: 10px; margin: 6px 0 4px; }
 .prchoice .btn { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; padding: 12px 16px; height: auto; }
 .prchoice small { font-weight: 400; color: #667; font-size: 13px; }
+/* 150×94mm の紙に刷る（ポストカードとして、枠を90度回す） */
+.card-page { box-sizing: border-box; }
+.card-hold { position: relative; }
+.card-rot { position: absolute; top: 0; transform: rotate(90deg); transform-origin: 0 0; }
+.card-rot .strip-date { margin: 0 0 1.5mm 2mm; height: 5.5mm; }
+.strip-ruler.cardr { margin: 0 0 1mm 2mm; display: flex; align-items: flex-end; gap: 3mm; } .strip-ruler.cardr svg { margin: 0; flex: none; } .strip-ruler.cardr span { font-size: 6.5pt; line-height: 1.2; }
+.print-sample.card-sample #print { width: auto; padding: 10mm; background: #e5e7eb; }
+.print-sample.card-sample #print .card-page { background: #fff; width: 100mm; height: 148mm; margin: 0 auto; }
+.stmove .sub { margin-left: 6px; }
