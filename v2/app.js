@@ -828,10 +828,11 @@ async function openEditor(examId) {
       <button class="btn primary" id="done">完了</button>
     </header>
     <div class="ed-main"><div id="stats" class="stats"></div>
-      <div class="chartbox"><div class="chartvp" id="chartvp"><div class="chartsz" id="chartsz"><div id="chart"></div></div></div><div class="zoomctl" id="zoomctl"></div></div></div>
+      <div class="chartbox"><div class="chartvp" id="chartvp"><div class="chartsz" id="chartsz"><div id="chart"></div></div></div><div class="zoomctl" id="zoomctl"></div><div class="boptag" id="boptag" hidden></div></div></div>
     <div class="voicebar" id="voicebar" hidden></div>
     <div class="pad" id="pad"></div>
   </div>`;
+  $('#chartvp').addEventListener('scroll', () => placeBopTag(), { passive: true }); // チャートを動かしたら、出血のエリアの札がポケットの数字に重ならない所へ
   ed.prev = await findPrevExam(exam, true); // 前回比は同じ種類の検査と
   ed.showDiff = !!ed.prev;
   const difbtn = $('#difbtn');
@@ -1027,6 +1028,32 @@ function setupChartZoom() {
   }, { passive: false });
 }
 // 今の場所（音声の出血モードは今の列）が真ん中に来るように、チャートを動かす。指で動かしている間は動かさない
+// 出血モードの大きな札（2026-11-15 利用者が選んだ形：チャートの左上の角に「出血を入れる所 / 左上 頬側」）。
+// ポケットの数字（td.s に値があるマス）に重なるときは左下へ。左下でも重なるなら、今のエリアの行に重ならない方
+function placeBopTag() {
+  const el = $('#boptag');
+  if (!el) return;
+  const show = voice.on && voice.mode === 'bop' && voice.ctx && view.name === 'editor';
+  el.hidden = !show;
+  if (!show) return;
+  const label = ctxLabel(voice.ctx);
+  if (el.dataset.label !== label) { el.innerHTML = `<small>出血を入れる所</small>${esc(label)}`; el.dataset.label = label; }
+  const ch = $('#chart');
+  if (!ch) return;
+  const hit = (sel) => {
+    const r = el.getBoundingClientRect();
+    return [...ch.querySelectorAll(sel)].some((c) => {
+      if (sel === 'td.s' && !c.textContent.trim()) return false;
+      const q = c.getBoundingClientRect();
+      return q.right > r.left && q.left < r.right && q.bottom > r.top && q.top < r.bottom;
+    });
+  };
+  el.classList.remove('low');
+  if (!hit('td.s')) return;
+  el.classList.add('low');
+  if (!hit('td.s')) return;
+  if (hit('td.ctxrow')) el.classList.remove('low');
+}
 function followCursor(again) {
   const vp = $('#chartvp'), ch = $('#chart');
   if (!vp || !ch || view.name !== 'editor') return;
@@ -2027,11 +2054,27 @@ function bopCue(ops) {
   if (n > (voice.bopPopN || 0) && guideOn('tooth')) playTone('pop');
   voice.bopPopN = Math.max(n, voice.bopPopN || 0);
 }
-function bopGuide(ctx0, ctx1, ops, done) {
+function bopGuide(ctx0, ctx1, ops, done, onlyTooth) {
   const T = ed.exam.teeth, items = [];
   const fails = [...new Set(done.map(failSpeech).filter(Boolean))];
+  const reply = replyMode();
   if (ops.length && guideOn('okBeep')) items.push({ tone: 'pop' });
-  if (ops.length && guideOn('echo')) {
+  // 声の返し方（ポケットと同じ設定）：エリアが変わったら「左上 頬側」、出血を付けたら「4番 遠心」、歯だけ言ったら「4番」（2026-11-15 利用者の希望）
+  const words = [];
+  if (reply !== 'tone' && guideOn('enabled')) {
+    if (ctx0.q !== ctx1.q || ctx0.side !== ctx1.side) words.push(ctxLabel(ctx1));
+    const byTooth = [];
+    for (const o of ops) {
+      let g = byTooth.find((x) => x.t === o.t);
+      if (!g) { g = { t: o.t, words: [] }; byTooth.push(g); }
+      const w = o.k === 'x' ? (o.field === 'bop' && T[o.t].bop[o.k] ? '出血' : flagWord(o, T)) : o.field === 'bop' && T[o.t].bop[o.k] ? POS[o.k[1]] : `${POS[o.k[1]]} ${flagWord(o, T)}`;
+      if (!g.words.includes(w)) g.words.push(w);
+    }
+    for (const g of byTooth) words.push(reply === 'full' && g.t ? `${toothName(g.t)} ${g.words.join(' ')}` : `${g.t % 10}番 ${g.words.join(' ')}`);
+    if (!ops.length && onlyTooth && reply !== 'short') words.push(`${onlyTooth % 10}番`);
+  }
+  if (words.length) items.push({ reply: true, text: words.join('、') });
+  else if (ops.length && guideOn('echo')) {
     const byTooth = [];
     for (const o of ops) {
       let g = byTooth.find((x) => x.t === o.t);
@@ -2055,6 +2098,7 @@ function renderVoice() {
   v.hidden = !voice.on && !voice.msg && !voice.warn;
   const ch = $('#chart');
   if (ch) ch.classList.toggle('voiceon', voice.on && voice.mode !== 'bop');
+  placeBopTag();
   // iPhone：聞き取り中は下のボタンの欄をたたんで、チャートを大きく（2026-11-15 利用者の希望。iPad は CSS で変えない）。帯の「▲ ボタン」で出せる
   const edEl = document.querySelector('.editor');
   if (edEl) {
@@ -2078,9 +2122,26 @@ function renderVoice() {
   const st = voice.specTooth;
   const nowTooth = voice.on && voice.mode !== 'bop' && c && st && st.t !== c.t && (st.kind === 'tap' || st.cur === ed.cur) && !isBasic(ed.exam || {})
     ? `<span class="vnow"><small>前・奥は</small>${toothName(st.t)}</span>` : '';
-  v.innerHTML = `<div class="vrow">${state}${where}${nowTooth}${voice.on && voice.mode === 'bop' && voice.ctx ? `<span class="vctx">出血入力中：${ctxLabel(voice.ctx)}</span>` : ''}${voice.warn ? `<span class="vwarn">⚠ ${esc(voice.warn)}</span>` : ''}<span class="vm">${voice.msg}</span>${voice.interim ? `<span class="vi">${esc(voice.interim)}…</span>` : ''}
+  // 出血モード：今のエリアを小さな地図（上から 上顎頬側・口蓋側・下顎舌側・頬側、左が患者の右）と大きな文字で。地図を押すとエリアを替える
+  let bopArea = '';
+  if (voice.on && voice.mode === 'bop' && voice.ctx) {
+    const c = voice.ctx, basicEx = isBasic(ed.exam || {});
+    const rows = basicEx ? [[1, 2], [4, 3]].map((qs) => qs.map((q) => [q, c.side])) : [[[1, 'b'], [2, 'b']], [[1, 'l'], [2, 'l']], [[4, 'l'], [3, 'l']], [[4, 'b'], [3, 'b']]];
+    const cell = ([q, sd]) => `<i class="${c.q === q && (basicEx || c.side === sd) ? 'on' : ''}" data-varea="${q}${sd}"></i>`;
+    const tooth = voice.bopTooth && Math.floor(voice.bopTooth / 10) === c.q ? `<small>${voice.bopTooth % 10}番</small>` : '';
+    bopArea = `<span class="vctx"><span class="vmap${basicEx ? ' b4' : ''}">${rows.map((r) => r.map(cell).join('')).join('')}</span><b>${ctxLabel(c)}</b>${tooth}</span>`;
+  }
+  v.innerHTML = `<div class="vrow vtop">${state}${where}${bopArea}${nowTooth}${voice.warn ? `<span class="vwarn">⚠ ${esc(voice.warn)}</span>` : ''}</div>
+    <div class="vrow vbot"><span class="vm">${voice.msg}</span>${voice.interim ? `<span class="vi">${esc(voice.interim)}…</span>` : ''}
     ${voice.mode !== 'bop' && !isBasic(ed.exam || {}) ? `<button class="tool undo vjump${isJump() ? ' on' : ''}" id="vjump" title="入れ方を切り替える">${isJump() ? '↔ 飛び飛び' : '→ 順に'}</button>` : ''}<button class="tool undo vpad" id="vpad" title="下のボタンを出す・たたむ">${voice.padOpen ? '▼ たたむ' : '▲ ボタン'}</button><button class="tool undo vlogbtn vng" id="vng" title="今の聞き取りは違う">✕ 違う</button><button class="tool undo" id="vhelp">？ 話し方</button><button class="tool undo" id="vmute">${voice.muted ? '🔇 案内オフ' : '🔈 案内'}</button><button class="tool undo" id="vlog">聞き取りの記録</button><button class="tool undo" id="vtest">読み上げテスト</button></div>
 `;
+  v.querySelectorAll('[data-varea]').forEach((el) => (el.onpointerdown = (e) => {
+    e.preventDefault();
+    const q = Number(el.dataset.varea[0]), sd = el.dataset.varea[1];
+    voice.ctx = { q, side: sd }; voice.bopTooth = null; voice.ctxCue = `${q}${sd}`;
+    refresh(); renderVoice();
+    if (guideOn('area')) guide([{ tone: 'chime', ...(replyMode() !== 'tone' ? { text: ctxLabel(voice.ctx) } : {}) }]);
+  }));
   $('#vmute').onclick = () => { voice.muted = !voice.muted; if (voice.muted) { guideQ.length = 0; try { speechSynthesis.cancel(); } catch { /* なし */ } } renderVoice(); };
   $('#vlog').onclick = showVoiceLog;
   $('#vtest').onclick = showVoiceTest;
@@ -2147,6 +2208,7 @@ const SPEECH_FIX = [
   // 近心・遠心・中央の言いかえ（聞き取りやすい日常の言葉）：まえ＝近心、なか＝中央、おく＝遠心。「7 おく」は「7億」と聞こえることがある
   [/おもて|オモテ|表(?!示)/g, '頬側'], [/うら|ウラ|裏/g, '口蓋側'], // 頬側＝おもて、口蓋側・舌側＝うら（言いやすい言葉。下の歯の「うら」は舌側になる）
   [/真ん中|まんなか|まん中|マンナカ/g, '中央'], // 「なか」より先に（「まん中央」にならないように）
+  [/イオン/g, '4'], [/置く/g, '遠心'], [/栄伸|栄進|栄真/g, '遠心'], [/勤診|金診|近診/g, '近心'], [/(右上|左上|右下|左下)\s*地位/g, '$1 1'], // 2026-11-15 夕方の記録（イオン＝よん、置く＝おく、栄進＝遠心、参勤診＝3 近心、左下地位＝左下1）
   [/右右(?=\s*[1-8一二三四五六七八])/g, '右上'], [/心身/g, '近心'], [/大久保/g, '遠心5'], [/^\s*子\s*$/g, '5'], // 2026-11-15 の記録（「右右6」「心身」「大久保」＝奥5、「子」＝5）
   [/てまえ|手前|まえ|マエ|前(?!部)/g, '近心'], [/おく|オク|奥|億/g, '遠心'], [/なか|ナカ|中(?![央王応を])/g, '中央'],
   // 部位の言葉の聞き間違い。「聞き取りの記録」で見つかったものを元に、音の組み合わせで読み替える
@@ -2237,6 +2299,8 @@ function tokenizeSpeech(raw) {
     else if (g.next) toks.push({ type: 'next' });
     else if (g.stop) toks.push({ type: 'stop' });
   }
+  // 「どこ」だけは、その言葉だけのとき（「お兄さんどこ行く」で今の場所を読み上げていた。2026-11-15）
+  if (toks.some((t) => t.type === 'where') && !/今どこ|いまどこ|現在地/.test(s) && s.replace(/どこ|[\s、。,.!?！？]/g, '')) return toks.filter((t) => t.type !== 'where');
   // 会話の中の数字を拾わない：数字しか読めず、読めない文字のほうが多い文（「お母さんに渡して」→ 3・2 が入っていた。2026-11-15）
   const rest = s.replace(/[\s、。,.!?！？]/g, '').length - hit;
   if (toks.length && toks.every((t) => t.type === 'num' && !t.ban) && rest >= 2 && rest > hit) return [];
@@ -2382,7 +2446,7 @@ function handleBopSpeech(raw, provisional, dry) {
   }
   if (dry) return { ops, done };
   if (!toks.length && !done.length) { voice.lastGuide = []; voice.lastResult = '（声かけ・会話として無視）'; renderVoice(); return ops; }
-  voice.lastGuide = bopGuide(ctx0, ctx, ops, done);
+  voice.lastGuide = bopGuide(ctx0, ctx, ops, done, onlyTooth ? voice.bopTooth : null);
   if (undone && guideOn('enabled')) voice.lastGuide.push({ text: `${undone[0].t % 10}番、取り消しました` });
   if (ops.length) { voice.hist.push(ops); ed.undo = { kind: 'voice', ops }; ed.flash = '音声で入力しました'; }
   voice.lastResult = done.length ? done.join('、') : '入力できる言葉がありませんでした';

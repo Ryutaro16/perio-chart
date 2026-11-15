@@ -174,7 +174,16 @@ dialog.closable .dlg-body > h2:first-child { padding-right: 46px; }
 .voicebar[hidden] { display: none; }
 .voicebar .vi { color: var(--sub); }
 .voicebar .vpause { flex: none; background: #e0f2fe; color: #075985; font-weight: 700; padding: 2px 10px; border-radius: 8px; max-width: 30%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.voicebar .vctx { flex: none; background: #dc2626; color: #fff; font-weight: 800; font-size: 20px; padding: 3px 14px; border-radius: 10px; }
+.voicebar .vctx { flex: none; display: inline-flex; align-items: center; gap: 10px; background: #1d4ed8; color: #fff; font-weight: 800; font-size: 20px; padding: 3px 14px 3px 6px; border-radius: 10px; }
+.voicebar .vctx small { font-size: 15px; background: #fff; color: #1d4ed8; border-radius: 6px; padding: 0 7px; }
+.voicebar .vmap { display: grid; grid-template-columns: 20px 20px; gap: 2px; background: #fff; border-radius: 5px; padding: 3px; }
+.voicebar .vmap i { display: block; width: 20px; height: 6px; border-radius: 2px; background: #e5e7eb; cursor: pointer; }
+.voicebar .vmap i:nth-child(4n+1), .voicebar .vmap i:nth-child(4n+2) { }
+.voicebar .vmap i:nth-child(4) { margin-bottom: 3px; } .voicebar .vmap i:nth-child(3) { margin-bottom: 3px; }
+.voicebar .vmap.b4 i { height: 10px; } .voicebar .vmap.b4 i:nth-child(n) { margin-bottom: 0; } .voicebar .vmap.b4 i:nth-child(2) { margin-bottom: 3px; } .voicebar .vmap.b4 i:nth-child(1) { margin-bottom: 3px; }
+.voicebar .vmap i.on { background: #1d4ed8; }
+.voicebar .vtop { min-height: 32px; }
+.voicebar .vbot { margin-top: 3px; }
 /* 出血タブの歯列の地図 */
 .areamap { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 2px 0 2px; }
 .pad-status .bopclear { margin-left: auto; }
@@ -182,7 +191,7 @@ dialog.closable .dlg-body > h2:first-child { padding-right: 46px; }
 .ajaw { font-size: 13px; font-weight: 700; color: var(--sub); writing-mode: vertical-rl; letter-spacing: 2px; }
 .agrid { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 3px; }
 .area { min-height: 31px; border: 1px solid var(--line); background: #f8fafc; border-radius: 8px; font-size: 15px; color: var(--sub); }
-.area.on { background: #dc2626; border-color: #dc2626; color: #fff; font-size: 19px; font-weight: 800; box-shadow: 0 0 0 3px #fecaca; }
+.area.on { background: #1d4ed8; border-color: #1d4ed8; color: #fff; font-size: 19px; font-weight: 800; box-shadow: 0 0 0 3px #bfdbfe; }
 .voicebar .vlogbtn { margin-left: auto; flex: none; }
 /* 音声入力中：話してよいか・次に入る場所 */
 .voicebar .vstate { flex: none; display: inline-flex; align-items: center; gap: 7px; font-weight: 800; font-size: 16px; padding: 4px 14px 4px 12px; border-radius: 999px; }
@@ -333,7 +342,11 @@ dialog.closable .dlg-body > h2:first-child { padding-right: 46px; }
 .voicebar .tool.undo { white-space: nowrap; flex: none; }
 .voicebar .vrow { flex-wrap: wrap; row-gap: 4px; }
 /* 出血だけの音声で、今声で入れている列：薄い赤で塗り、上下に赤い太線 */
-.chart td.ctxrow { box-shadow: inset 0 0 0 999px rgba(239, 68, 68, .14), inset 0 4px 0 #dc2626, inset 0 -4px 0 #dc2626; }
+.chart td.ctxrow { box-shadow: inset 0 0 0 999px #dbeafe; } /* 出血モードの今のエリア：薄い青（出血の赤丸と重ならない色。2026-11-15） */
+.boptag { position: absolute; z-index: 4; left: 8px; top: 6px; background: #1d4ed8; color: #fff; font-weight: 800; font-size: 30px; line-height: 1.1; padding: 6px 16px 8px; border-radius: 12px; white-space: nowrap; pointer-events: none; box-shadow: 0 2px 8px rgba(0, 0, 0, .3); }
+.boptag small { display: block; font-size: 13px; font-weight: 700; opacity: .85; letter-spacing: 2px; }
+.boptag.low { top: auto; bottom: 6px; }
+.boptag[hidden] { display: none; }
 /* 前回から引き継いだ未確定の値 */
 .chart td.c { color: #a7b0bb; font-weight: 500; font-style: italic; }
 .chart td.s.c.p4 { background: #fdf5d6; color: #c4a46a; }
@@ -464,6 +477,9 @@ i.dif.dn { color: #2563eb; }
 /* 縦：上は2段（名前・日付・検査者・⚙ ／ 音声・印刷・完了）、数字は6個ずつ2段 */
 @media (max-width: 600px) {
   .editor .brk { display: block; flex-basis: 100%; height: 0; }
+  .voicebar .vbot .vm { flex-basis: 100%; white-space: normal; line-height: 1.35; } /* 縦は聞き取った言葉を1段使って全部出す */
+  .voicebar .vctx { font-size: 18px; }
+  .boptag { font-size: 22px; padding: 4px 10px 6px; left: 4px; top: 4px; } .boptag small { font-size: 11px; letter-spacing: 1px; } /* 縦は右上の拡大ボタンにかからない大きさ */
   .editor .bar .grow { display: none; }
   .editor .bar .brk ~ .btn { flex: 1; padding: 4px 4px; }
   .keys.n12 { grid-template-columns: repeat(6, 1fr); }
