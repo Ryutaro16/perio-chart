@@ -1788,7 +1788,7 @@ const WARN_RE = /入力していません|聞き取れません|欠損です|あ
 // 飛び飛びモード（場所を言って入れる。数字だけでは入れない）。検査を開いたときに自動で選ぶ（ed.jumpAuto：ほぼ入力済み＝前回の値を引き継いだ検査など）。
 // 帯のボタンで切り替えたら、その検査を開いている間は ed.jumpPick
 const isJump = () => voice.mode !== 'bop' && !!(ed.jumpPick ?? ed.jumpAuto ?? settings.voiceJump);
-const replyMode = () => settings.guide.reply || 'short'; // 声の返し方：short＝歯の名前と入った数字だけ／full＝全部／tone＝音だけ
+const replyMode = () => settings.guide.reply || 'each'; // 声の返し方：each＝歯の名前・場所・数字をそれぞれ短く（初期）／short＝歯の名前と入った数字だけ（場所はポッ）／full＝全部／tone＝音だけ
 function setVoiceResult(raw, done, fallback) {
   const warns = done.filter((d) => WARN_RE.test(d));
   const oks = done.filter((d) => !WARN_RE.test(d));
@@ -2601,9 +2601,13 @@ function handleSpeech(raw, provisional = false, dry = false) {
   let moveItem = null;
   if (moved && !ops.length && !toks.some((t) => t.type === 'prev' || t.type === 'next')) {
     const b = cur(), reply = replyMode(), saidSite = toks.some((t) => t.type === 'side' || t.type === 'pos');
+    const saidSide = toks.some((t) => t.type === 'side'), saidPos = toks.some((t) => t.type === 'pos');
+    const said = b.k === 'x' ? '' : [saidSide ? sideName(b.t, b.k[0]) : '', saidPos ? POS[b.k[1]] : ''].filter(Boolean).join(' '); // 言った場所の言葉だけ（「うら」→口蓋側、「前」→近心）
     if (reply === 'tone') moveItem = { tone: 'pop' };
-    else if (hasTooth) moveItem = { reply: true, text: b.k === 'x' || !(reply === 'full' || saidSite) ? toothName(b.t) : `${toothName(b.t)} ${sideName(b.t, b.k[0])} ${POS[b.k[1]]}` };
-    else moveItem = reply === 'full' ? { reply: true, text: `${sideName(b.t, b.k[0])} ${POS[b.k[1]]}` } : { tone: 'pop' };
+    else if (hasTooth) moveItem = { reply: true, text: b.k === 'x' || !(reply === 'full' || saidSite) ? toothName(b.t) : reply === 'each' ? `${toothName(b.t)} ${said}` : `${toothName(b.t)} ${sideName(b.t, b.k[0])} ${POS[b.k[1]]}` };
+    else if (reply === 'full') moveItem = { reply: true, text: `${sideName(b.t, b.k[0])} ${POS[b.k[1]]}` };
+    else if (reply === 'each' && said) moveItem = { reply: true, text: said };
+    else moveItem = { tone: 'pop' };
   }
   voice.lastGuide = ppdGuide(cur0, ed.cur, ops, done, complete0, ppdComplete(), moved && !ops.length, moved, moveItem);
   if (jump && echoes.length) voice.lastGuide = voice.lastGuide.filter((g) => g.tone === 'buzz'); // 飛び飛びは道案内の代わりに、入った場所を返す
@@ -3302,7 +3306,7 @@ function guideSettingsHTML() {
       ${GUIDE_ITEMS.map(([h, list]) => `<div class="swgroup"><div class="swh">${h}</div>${list.map((it) => sw(it, !g.enabled)).join('')}</div>`).join('')}
       <div class="swgroup"><div class="swh">声の返し方（歯を選んだとき・場所を言って入れたとき）</div>
         <p class="sub">声で返す間（約1秒）は聞き取りを止めます。音（ポッ）は止めません。</p>
-        <div class="row-tools">${[['short', '歯の名前と、入った数字だけ（「右上6」…「近心 3」）'], ['full', '全部（「右上6」「頬側 近心」「右上6 頬側 近心 3」）'], ['tone', '音だけ（ポッ）']].map(([v, l]) => `<label class="mini"><input type="radio" name="greply" value="${v}" ${replyMode() === v ? 'checked' : ''}> ${l}</label>`).join('')}</div></div>
+        <div class="row-tools">${[['each', '歯の名前・場所・数字をそれぞれ短く（「右上6」「近心」「近心 3」）'], ['short', '歯の名前と、入った数字だけ（場所はポッ）'], ['full', '全部（「右上6」「頬側 近心」「右上6 頬側 近心 3」）'], ['tone', '音だけ（ポッ）']].map(([v, l]) => `<label class="mini"><input type="radio" name="greply" value="${v}" ${replyMode() === v ? 'checked' : ''}> ${l}</label>`).join('')}</div></div>
       <div class="swgroup"><div class="swh">声の速さ</div><div class="row-tools">
         ${[['normal', 'ふつう'], ['mid', '少し速い'], ['fast', '速い']].map(([v, l]) => `<label class="mini"><input type="radio" name="grate" value="${v}" ${g.rate === v ? 'checked' : ''}> ${l}</label>`).join('')}
         <button class="btn" id="gtest">試しに聞く</button></div></div>
