@@ -1497,7 +1497,8 @@ function voiceFinal(text) {
   guide(quiet ? quietGuide(voice.lastGuide) : voice.lastGuide);
 }
 // 黙って区切ったときの案内：言葉の案内（「5番」など）は省き、音と警告・区切りの案内だけ残す。毎回の案内で聞き取りが止まらないように
-const quietGuide = (items) => (items || []).filter((g) => g.tone === 'buzz' || g.tone === 'chime' || g.tone === 'pop' || /次、|取り消しました/.test(g.text || ''));
+// 歯を選んだ・場所を言って入れたときの返事（reply）は省かない（2026-11-15：黙って区切られると「右上6」「近心 3」の声が出ていなかった）
+const quietGuide = (items) => (items || []).filter((g) => g.reply || g.tone === 'buzz' || g.tone === 'chime' || g.tone === 'pop' || /次、|取り消しました/.test(g.text || ''));
 const VOICE_LOG_MAX = 200;
 function addVoiceLog(text, startIdx) {
   const s = ed.seq[startIdx];
@@ -2601,14 +2602,14 @@ function handleSpeech(raw, provisional = false, dry = false) {
   if (moved && !ops.length && !toks.some((t) => t.type === 'prev' || t.type === 'next')) {
     const b = cur(), reply = replyMode(), saidSite = toks.some((t) => t.type === 'side' || t.type === 'pos');
     if (reply === 'tone') moveItem = { tone: 'pop' };
-    else if (hasTooth) moveItem = { text: b.k === 'x' || !(reply === 'full' || saidSite) ? toothName(b.t) : `${toothName(b.t)} ${sideName(b.t, b.k[0])} ${POS[b.k[1]]}` };
-    else moveItem = reply === 'full' ? { text: `${sideName(b.t, b.k[0])} ${POS[b.k[1]]}` } : { tone: 'pop' };
+    else if (hasTooth) moveItem = { reply: true, text: b.k === 'x' || !(reply === 'full' || saidSite) ? toothName(b.t) : `${toothName(b.t)} ${sideName(b.t, b.k[0])} ${POS[b.k[1]]}` };
+    else moveItem = reply === 'full' ? { reply: true, text: `${sideName(b.t, b.k[0])} ${POS[b.k[1]]}` } : { tone: 'pop' };
   }
   voice.lastGuide = ppdGuide(cur0, ed.cur, ops, done, complete0, ppdComplete(), moved && !ops.length, moved, moveItem);
   if (jump && echoes.length) voice.lastGuide = voice.lastGuide.filter((g) => g.tone === 'buzz'); // 飛び飛びは道案内の代わりに、入った場所を返す
   if ((fixes.length || echoes.length) && guideOn('enabled')) {
     const reply = replyMode();
-    voice.lastGuide.unshift(reply === 'tone' ? { tone: 'pop' } : { text: [...fixes, ...echoes].map((x) => x[reply === 'full' ? 'full' : 'short']).join('、') });
+    voice.lastGuide.unshift(reply === 'tone' ? { tone: 'pop' } : { reply: true, text: [...fixes, ...echoes].map((x) => x[reply === 'full' ? 'full' : 'short']).join('、') });
   }
   if (undone && !ops.length && guideOn('enabled')) { // 取り消したら、どこから言い直すかを伝える
     const c = cur();
