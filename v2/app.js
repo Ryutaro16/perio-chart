@@ -403,8 +403,19 @@ function openDialog(html, wide = false) {
   const d = $('#dlg');
   d.onclose = null;
   d.classList.toggle('wide', wide);
-  d.innerHTML = html;
+  // 「閉じる」がある画面は、右上にも閉じるボタンを置き（スクロールしても見える）、画面の外を押しても閉じる（2026-11-15 iPhone横で下の「閉じる」が見えなかった）
+  const closable = /data-close/.test(html);
+  d.classList.toggle('closable', closable);
+  d.innerHTML = (closable ? '<div class="dlg-xbar"><button class="dlg-x" data-close aria-label="閉じる">✕</button></div>' : '') + html;
   d.querySelectorAll('[data-close]').forEach((b) => (b.onclick = closeDialog));
+  if (!d.dataset.outside) {
+    d.dataset.outside = '1';
+    d.addEventListener('click', (e) => { // 画面の外（暗い所）を押したとき
+      if (e.target !== d || !d.classList.contains('closable')) return;
+      const r = d.getBoundingClientRect();
+      if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) closeDialog();
+    });
+  }
   if (!d.open) d.showModal();
 }
 function closeDialog() { const d = $('#dlg'); if (d.open) d.close(); }
@@ -2038,6 +2049,15 @@ function renderVoice() {
   v.hidden = !voice.on && !voice.msg && !voice.warn;
   const ch = $('#chart');
   if (ch) ch.classList.toggle('voiceon', voice.on && voice.mode !== 'bop');
+  // iPhone：聞き取り中は下のボタンの欄をたたんで、チャートを大きく（2026-11-15 利用者の希望。iPad は CSS で変えない）。帯の「▲ ボタン」で出せる
+  const edEl = document.querySelector('.editor');
+  if (edEl) {
+    if (!voice.on) voice.padOpen = false;
+    const was = edEl.classList.contains('vfull') && !edEl.classList.contains('padopen');
+    edEl.classList.toggle('vfull', voice.on);
+    edEl.classList.toggle('padopen', !!voice.padOpen);
+    if (was !== (voice.on && !voice.padOpen)) requestAnimationFrame(() => followCursor());
+  }
   v.classList.toggle('warn', !!voice.warn);
   // 話してよいか（聞いている／案内中）と、次に入る場所を大きく出す。画面をちらっと見ただけで分かるように
   const waiting = voice.on && (guiding || voice.paused);
@@ -2049,13 +2069,14 @@ function renderVoice() {
   const where = voice.on && voice.mode !== 'bop' && c && ed.exam
     ? `<span class="vwhere"><small>${isJump() ? '今' : '次'}</small>${jumpFree ? '<b>歯と場所をどうぞ</b>' : voice.endedSite ? '全部位 入力済み' : `${toothName(c.t)}<b>${c.k === 'x' ? 'ポケット' : `${sideName(c.t, c.k[0])} ${POS[c.k[1]]}`}</b>`}</span>` : '';
   v.innerHTML = `<div class="vrow">${state}${where}${voice.on && voice.mode === 'bop' && voice.ctx ? `<span class="vctx">出血入力中：${ctxLabel(voice.ctx)}</span>` : ''}${voice.warn ? `<span class="vwarn">⚠ ${esc(voice.warn)}</span>` : ''}<span class="vm">${voice.msg}</span>${voice.interim ? `<span class="vi">${esc(voice.interim)}…</span>` : ''}
-    ${voice.mode !== 'bop' && !isBasic(ed.exam || {}) ? `<button class="tool undo vjump${isJump() ? ' on' : ''}" id="vjump" title="入れ方を切り替える">${isJump() ? '↔ 飛び飛び' : '→ 順に'}</button>` : ''}<button class="tool undo vlogbtn vng" id="vng" title="今の聞き取りは違う">✕ 違う</button><button class="tool undo" id="vhelp">？ 話し方</button><button class="tool undo" id="vmute">${voice.muted ? '🔇 案内オフ' : '🔈 案内'}</button><button class="tool undo" id="vlog">聞き取りの記録</button><button class="tool undo" id="vtest">読み上げテスト</button></div>
+    ${voice.mode !== 'bop' && !isBasic(ed.exam || {}) ? `<button class="tool undo vjump${isJump() ? ' on' : ''}" id="vjump" title="入れ方を切り替える">${isJump() ? '↔ 飛び飛び' : '→ 順に'}</button>` : ''}<button class="tool undo vpad" id="vpad" title="下のボタンを出す・たたむ">${voice.padOpen ? '▼ たたむ' : '▲ ボタン'}</button><button class="tool undo vlogbtn vng" id="vng" title="今の聞き取りは違う">✕ 違う</button><button class="tool undo" id="vhelp">？ 話し方</button><button class="tool undo" id="vmute">${voice.muted ? '🔇 案内オフ' : '🔈 案内'}</button><button class="tool undo" id="vlog">聞き取りの記録</button><button class="tool undo" id="vtest">読み上げテスト</button></div>
 `;
   $('#vmute').onclick = () => { voice.muted = !voice.muted; if (voice.muted) { guideQ.length = 0; try { speechSynthesis.cancel(); } catch { /* なし */ } } renderVoice(); };
   $('#vlog').onclick = showVoiceLog;
   $('#vtest').onclick = showVoiceTest;
   $('#vhelp').onclick = showVoiceHelp;
-  $('#vng').onpointerdown = (e) => { e.preventDefault(); markLastVoiceNG(); }; // 話している間は帯が描き直されるので、押した瞬間に
+  $('#vng').onpointerdown = (e) => { e.preventDefault(); markLastVoiceNG(); };
+  $('#vpad').onpointerdown = (e) => { e.preventDefault(); voice.padOpen = !voice.padOpen; renderVoice(); }; // 話している間は帯が描き直されるので、押した瞬間に
   if ($('#vjump')) $('#vjump').onpointerdown = (e) => {
     e.preventDefault();
     settings.voiceJump = !settings.voiceJump; saveSettings();

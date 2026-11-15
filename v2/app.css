@@ -140,6 +140,9 @@ dialog { border: none; border-radius: 16px; padding: 0; width: min(640px, 92vw);
 dialog.wide { width: min(1000px, 96vw); }
 dialog .dlg-actions .grow { flex: 1; }
 dialog::backdrop { background: rgba(15, 23, 42, .35); }
+.dlg-xbar { position: sticky; top: 0; height: 0; z-index: 5; }
+.dlg-x { position: absolute; top: 10px; right: 10px; width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--line); background: #fff; color: var(--ink); font-size: 20px; line-height: 1; display: flex; align-items: center; justify-content: center; box-shadow: 0 1px 4px rgba(15, 23, 42, .15); cursor: pointer; outline: none; }
+dialog.closable .dlg-body > h2:first-child { padding-right: 46px; }
 .dlg-body { padding: 18px 20px; }
 .dlg-body h2 { font-size: 19px; margin-bottom: 14px; }
 .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; font-size: 14px; color: var(--sub); }
@@ -412,6 +415,7 @@ i.dif.dn { color: #2563eb; }
   .keys.tools, .keys.tools7, .keys.n7 { grid-template-columns: repeat(4, 1fr); }
 }
 .editor .brk { display: none; }
+.voicebar #vpad { display: none; } /* iPhone だけ出す */
 
 /* ---------- iPhone：縦（幅が狭い）と横（高さが低い）。チャートに場所をゆずるため、上と下を詰める ---------- */
 @media (max-width: 600px), (max-height: 500px) and (orientation: landscape) {
@@ -450,6 +454,10 @@ i.dif.dn { color: #2563eb; }
   .voicebar .vwarn { font-size: 15px; }
   .voicebar #vtest { display: none; }
   .voicebar .tool.undo { min-height: 30px; padding: 0 9px; font-size: 13px; }
+  /* 聞き取り中は下のボタンの欄をたたんで、チャートを大きく（帯の「▲ ボタン」で出す） */
+  .voicebar #vpad { display: inline-flex; }
+  .editor.vfull:not(.padopen) .pad { display: none; }
+  .editor.vfull:not(.padopen) .voicebar { padding-bottom: calc(4px + env(safe-area-inset-bottom)); }
 }
 /* 縦：上は2段（名前・日付・検査者・⚙ ／ 音声・印刷・完了）、数字は6個ずつ2段 */
 @media (max-width: 600px) {
