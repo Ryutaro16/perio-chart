@@ -332,6 +332,10 @@ dialog.closable .dlg-body > h2:first-child { padding-right: 46px; }
 .chart td.p6 { background: var(--p6); color: var(--p6-ink); }
 .chart td.miss { background: repeating-linear-gradient(135deg, var(--miss) 0 4px, #f6f7f9 4px 8px); }
 .chart td.cur { box-shadow: inset 0 0 0 3px var(--cur); }
+/* 歯と側だけ選んだとき：その歯の3マスをまとめて囲む（近心・中央・遠心はまだ決めていない） */
+.chart td.ct { background: #dbeafe; box-shadow: inset 0 3px 0 var(--cur), inset 0 -3px 0 var(--cur); animation: curpulse 1.6s ease-in-out infinite; }
+.chart td.ct.ctl { box-shadow: inset 0 3px 0 var(--cur), inset 0 -3px 0 var(--cur), inset 3px 0 0 var(--cur); }
+.chart td.ct.ctr { box-shadow: inset 0 3px 0 var(--cur), inset 0 -3px 0 var(--cur), inset -3px 0 0 var(--cur); }
 /* 声で入った所（少しのあいだ）・確かめてほしい深い値 */
 .chart td.vnew { background: #bfdbfe; transition: background .4s; }
 .chart td.vchk { background: #fdba74; color: #7c2d12; box-shadow: inset 0 0 0 2px #ea580c; }

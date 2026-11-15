@@ -325,7 +325,10 @@ function chartHTML(exam, o = {}) {
   const ppdRow = (row, side, label) => `<tr><th class="lab">${label}</th>${subCells(row, side, 's', (t, th, k, c) => {
     const v = th.ppd[k];
     if (v >= 6) c.push('p6'); else if (v >= 4) c.push('p4');
-    if (o.cursor && o.cursor.t === t && o.cursor.k === k) c.push('cur');
+    if (o.toothSel && o.toothSel.t === t && o.toothSel.side === k[0]) { // 歯と側だけ選んだ（近心・中央・遠心はまだ）：3マスをまとめて囲む
+      const ks = screenKeys(t, side), j = ks.indexOf(k);
+      c.push('ct'); if (j === 0) c.push('ctl'); if (j === ks.length - 1) c.push('ctr');
+    } else if (o.cursor && o.cursor.t === t && o.cursor.k === k) c.push('cur');
     if (o.ctx && quad(t) === o.ctx.q && k[0] === o.ctx.side) c.push('ctxrow');
     if (carried('ppd', t, k)) c.push('c');
     const dot = (type) => (th[type][k] ? `<i class="${type}${carried(type, t, k) ? ' c' : ''}"></i>` : '');
@@ -908,6 +911,7 @@ function refresh() {
   const m = ed.mode;
   $('#chart').innerHTML = chartHTML(ed.exam, {
     cursor: m === 'ppd' ? ed.seq[ed.cur] : null,
+    toothSel: m === 'ppd' && voice.on && voice.toothSel ? voice.toothSel : null,
     ctx: voice.on && voice.mode === 'bop' ? voice.ctx : null,
     mobCursor: m === 'mob' ? MOB_SEQ[ed.mob] : null,
     furCursor: m === 'fur' ? FURC_SEQ[ed.fur] : null,
@@ -1059,7 +1063,7 @@ function followCursor(again) {
   if (!vp || !ch || view.name !== 'editor') return;
   layoutZoom();
   if (zm.touching && Date.now() - (zm.touchAt || 0) < 8000) return; // 指で動かしている間は動かさない（合図を取りこぼしても8秒で戻る）
-  const cells = [...ch.querySelectorAll('td.cur')];
+  const cells = [...ch.querySelectorAll('td.cur, td.ct')];
   if (!cells.length) cells.push(...ch.querySelectorAll('td.ctxrow'));
   if (!cells.length) return;
   const rs = cells.map((c) => { const p = posInChart(c, ch); return p && [p[0], p[1], p[0] + c.offsetWidth, p[1] + c.offsetHeight]; }).filter(Boolean);
@@ -1355,7 +1359,7 @@ function onChartTap(e) {
     const t = Number(cell.dataset.t), k = cell.dataset.k;
     if (ed.mode === 'bop') { tapFlag('bop', t, k, T[t].bop); return touch(); }
     // 押して選んだ歯は、声の「近心 4」「4 4 4」の行き先になる（飛び飛びモードでも数字だけで入る）
-    voice.lastSite = null; voice.specTooth = { t, side: k[0], at: Date.now(), kind: 'tap' }; voice.pendingSpec = null;
+    voice.lastSite = null; voice.specTooth = { t, side: k[0], at: Date.now(), kind: 'tap' }; voice.pendingSpec = null; voice.toothSel = null;
     ed.mode = 'ppd';
     const i = ed.seq.findIndex((s) => s.t === t && s.k === k);
     if (i >= 0) { ed.cur = i; voice.endedSite = null; }
@@ -1469,7 +1473,7 @@ function undoProv() {
     const i = voice.hist.indexOf(p.ops);
     if (i >= 0) voice.hist.splice(i, 1);
   }
-  ed.cur = p.cur; voice.lastSite = p.lastSite; voice.endedSite = p.endedSite;
+  ed.cur = p.cur; voice.lastSite = p.lastSite; voice.endedSite = p.endedSite; voice.toothSel = p.toothSel || null;
   voice.specTooth = p.specTooth; voice.bopTooth = p.bopTooth; voice.bopLast = p.bopLast;
   if ('pendingSpec' in p) voice.pendingSpec = p.pendingSpec;
   if (p.ctx) voice.ctx = { ...p.ctx };
@@ -1487,7 +1491,7 @@ function voiceInterim(text) {
     const fresh = !voice.prov;
     undoProv();
     if (fresh) voice.cue = ed.cur; // 話し始め。ここから進んだぶんを合図する
-    const before = { cur: ed.cur, lastSite: voice.lastSite, endedSite: voice.endedSite, ctx: voice.ctx ? { ...voice.ctx } : null,
+    const before = { cur: ed.cur, toothSel: voice.toothSel, lastSite: voice.lastSite, endedSite: voice.endedSite, ctx: voice.ctx ? { ...voice.ctx } : null,
       specTooth: voice.specTooth, bopTooth: voice.bopTooth, bopLast: voice.bopLast, pendingSpec: voice.pendingSpec }; // 仮入力を戻すときに、言葉の続きの記憶も戻す
     voice.junkCut = false; voice.specCut = false;
     const ops = handleSpeech(text, true);
@@ -1721,7 +1725,7 @@ const startHint = () => (voice.mode === 'bop' ? '「右上 頬側」「7 遠心 
   : isJump() ? '飛び飛び：「左上7 うら まえ 4」のように歯と場所を言ってください（チャートを押して選び、数字だけでも入ります）' : '「3、3、4プラス」のように話してください');
 function voiceStop(silent = false) {
   clearTimeout(voice.timer); clearTimeout(voice.silTimer);
-  voice.cutReason = '停止ボタン';
+  voice.cutReason = '停止ボタン'; voice.toothSel = null;
   guideQ.length = 0;
   voice.paused = false; voice.speaking = '';
   try { if (window.speechSynthesis) speechSynthesis.cancel(); } catch { /* なし */ }
@@ -1933,6 +1937,7 @@ function failSpeech(w) {
   if (/場所が決まっていません/.test(w)) return '歯と場所をどうぞ';
   if (/歯の名前が聞き取れません/.test(w)) return '歯の名前をもう一度';
   if (/近心・遠心・中央が聞き取れません/.test(w)) return '部位をもう一度';
+  if (/部位（近心・中央・遠心）を言って/.test(w)) return '部位をどうぞ';
   if (/数字が聞き取れません/.test(w)) return '数字をもう一度';
   if (/出血モードです/.test(w)) return '出血モードです';
   if (/入力済み/.test(w)) return '最後まで入力済みです';
@@ -1969,8 +1974,8 @@ function cutRec(reason = '') {
   // 1つの文の中で最初に区切るとき、その前の状態を覚えておく（iPadが前の部分を書き換えたら、まとめて戻して入れ直すため）
   if (!base) {
     const p = voice.prov, at = p && p.ops ? voice.hist.indexOf(p.ops) : -1; // 仮入力が入る前の状態から
-    const src = p || { cur: ed.cur, lastSite: voice.lastSite, endedSite: voice.endedSite, ctx: voice.ctx, specTooth: voice.specTooth, bopTooth: voice.bopTooth, bopLast: voice.bopLast, pendingSpec: voice.pendingSpec };
-    voice.session = { hist0: at >= 0 ? at : voice.hist.length, cur: src.cur, lastSite: src.lastSite, endedSite: src.endedSite, ctx: src.ctx ? { ...src.ctx } : null,
+    const src = p || { cur: ed.cur, toothSel: voice.toothSel, lastSite: voice.lastSite, endedSite: voice.endedSite, ctx: voice.ctx, specTooth: voice.specTooth, bopTooth: voice.bopTooth, bopLast: voice.bopLast, pendingSpec: voice.pendingSpec };
+    voice.session = { hist0: at >= 0 ? at : voice.hist.length, cur: src.cur, toothSel: src.toothSel || null, lastSite: src.lastSite, endedSite: src.endedSite, ctx: src.ctx ? { ...src.ctx } : null,
       specTooth: src.specTooth, bopTooth: src.bopTooth, bopLast: src.bopLast, pendingSpec: src.pendingSpec };
   }
   voiceFinal(text);
@@ -1988,7 +1993,7 @@ function rollbackSession(full) {
   while (voice.hist.length > S.hist0) undoVoiceOps(voice.hist.pop());
   ed.cur = S.cur; voice.lastSite = S.lastSite; voice.endedSite = S.endedSite;
   if (S.ctx) voice.ctx = { ...S.ctx };
-  voice.specTooth = S.specTooth; voice.bopTooth = S.bopTooth; voice.bopLast = S.bopLast;
+  voice.specTooth = S.specTooth; voice.bopTooth = S.bopTooth; voice.bopLast = S.bopLast; voice.toothSel = S.toothSel || null;
   if ('pendingSpec' in S) voice.pendingSpec = S.pendingSpec;
   voice.consumed = ''; voice.session = null;
   if (voice.log[0]) voice.log[0].info = `${voice.log[0].info || ''}・iPadが書き換えたので入れ直し`;
@@ -2117,7 +2122,7 @@ function renderVoice() {
   const c = ed.seq && ed.seq[ed.cur];
   const jumpFree = isJump() && !voice.specTooth; // 飛び飛びで、まだ場所が決まっていない（歯を言う・押して選ぶと決まる）
   const where = voice.on && voice.mode !== 'bop' && c && ed.exam
-    ? `<span class="vwhere"><small>${isJump() ? '今' : '次'}</small>${jumpFree ? '<b>歯と場所をどうぞ</b>' : voice.endedSite ? '全部位 入力済み' : `${toothName(c.t)}<b>${c.k === 'x' ? 'ポケット' : `${sideName(c.t, c.k[0])} ${POS[c.k[1]]}`}</b>`}</span>` : '';
+    ? `<span class="vwhere"><small>${isJump() ? '今' : '次'}</small>${jumpFree ? '<b>歯と場所をどうぞ</b>' : voice.toothSel ? `${toothName(voice.toothSel.t)}<b>${sideName(voice.toothSel.t, voice.toothSel.side)}</b><small>部位をどうぞ</small>` : voice.endedSite ? '全部位 入力済み' : `${toothName(c.t)}<b>${c.k === 'x' ? 'ポケット' : `${sideName(c.t, c.k[0])} ${POS[c.k[1]]}`}</b>`}</span>` : '';
   // 順に：数字を入れてカーソルが次の歯へ進んだあとも、「前・奥」は入れた歯（今の歯）で動く。カーソルの歯と違うときだけ帯に出す
   const st = voice.specTooth;
   const nowTooth = voice.on && voice.mode !== 'bop' && c && st && st.t !== c.t && (st.kind === 'tap' || st.cur === ed.cur) && !isBasic(ed.exam || {})
@@ -2208,7 +2213,7 @@ const SPEECH_FIX = [
   // 近心・遠心・中央の言いかえ（聞き取りやすい日常の言葉）：まえ＝近心、なか＝中央、おく＝遠心。「7 おく」は「7億」と聞こえることがある
   [/おもて|オモテ|表(?!示)/g, '頬側'], [/うら|ウラ|裏/g, '口蓋側'], // 頬側＝おもて、口蓋側・舌側＝うら（言いやすい言葉。下の歯の「うら」は舌側になる）
   [/真ん中|まんなか|まん中|マンナカ/g, '中央'], // 「なか」より先に（「まん中央」にならないように）
-  [/イオン/g, '4'], [/置く/g, '遠心'], [/栄伸|栄進|栄真/g, '遠心'], [/勤診|金診|近診/g, '近心'], [/(右上|左上|右下|左下)\s*地位/g, '$1 1'], // 2026-11-15 夕方の記録（イオン＝よん、置く＝おく、栄進＝遠心、参勤診＝3 近心、左下地位＝左下1）
+  [/(左|右)辺/g, '$1上'], [/イオン/g, '4'], [/置く/g, '遠心'], [/栄伸|栄進|栄真/g, '遠心'], [/勤診|金診|近診/g, '近心'], [/(右上|左上|右下|左下)\s*地位/g, '$1 1'], // 2026-11-15 夕方の記録（イオン＝よん、置く＝おく、栄進＝遠心、参勤診＝3 近心、左下地位＝左下1）
   [/右右(?=\s*[1-8一二三四五六七八])/g, '右上'], [/心身/g, '近心'], [/大久保/g, '遠心5'], [/^\s*子\s*$/g, '5'], // 2026-11-15 の記録（「右右6」「心身」「大久保」＝奥5、「子」＝5）
   [/てまえ|手前|まえ|マエ|前(?!部)/g, '近心'], [/おく|オク|奥|億/g, '遠心'], [/なか|ナカ|中(?![央王応を])/g, '中央'],
   // 部位の言葉の聞き間違い。「聞き取りの記録」で見つかったものを元に、音の組み合わせで読み替える
@@ -2533,7 +2538,8 @@ function handleSpeech(raw, provisional = false, dry = false) {
   const moveToTarget = () => {
     if (!target) return;
     const i = resolve(target);
-    if (i >= 0) { ed.cur = i; voice.endedSite = null; moved = true; } else blocked = true;
+    // 歯（と側）だけで場所を言わなかったときは、近心などをまだ決めない（「左上7 頬側」→ 3マスを囲み、次の「近心」「中央」「遠心」で決める。2026-11-15 利用者の希望）
+    if (i >= 0) { ed.cur = i; voice.endedSite = null; moved = true; voice.toothSel = !basic && !target.pos ? { t: target.t, side: ed.seq[i].k[0] } : null; } else blocked = true;
     target = null;
   };
   const undoLast = () => {
@@ -2586,6 +2592,11 @@ function handleSpeech(raw, provisional = false, dry = false) {
         continue;
       }
       const tg = target; // 声で返すときに、歯の名前・側を言ったかを見る
+      if (!tg && voice.toothSel && toks.reduce((n, t) => n + (t.type === 'num' ? t.vals.length : 0), 0) === 1) { // 歯と側だけ選んで、まだ場所を決めていない（数字が2つ以上なら、その歯に順に入れる）
+        blocked = true;
+        done.push('部位（近心・中央・遠心）を言ってください。入力していません');
+        continue;
+      }
       moveToTarget();
       if (blocked) continue;
       if (back) {
@@ -2635,8 +2646,8 @@ function handleSpeech(raw, provisional = false, dry = false) {
       done.push(`${shortSite(s)} ${tk.label}`);
       if (spec) { const f = `${toothName(s.t)} ${posText(s)} ${tk.field === 'pus' ? '排膿' : tk.val ? '出血' : '出血なし'}`; fixes.push({ short: f, full: f }); specDone(s); }
     } else if (tk.type === 'undo') undoLast();
-    else if (tk.type === 'prev') { moveToTarget(); ed.cur = stepPPD(-1); voice.endedSite = null; moved = true; }
-    else if (tk.type === 'next') { moveToTarget(); ed.cur = stepPPD(1); moved = true; }
+    else if (tk.type === 'prev') { moveToTarget(); ed.cur = stepPPD(-1); voice.endedSite = null; moved = true; voice.toothSel = null; }
+    else if (tk.type === 'next') { moveToTarget(); ed.cur = stepPPD(1); moved = true; voice.toothSel = null; }
     else if (tk.type === 'stop') { if (!dry) voiceStop(); }
   }
   moveToTarget();
@@ -2645,8 +2656,9 @@ function handleSpeech(raw, provisional = false, dry = false) {
     echoes.push({ full: `${toothName(f.t)} ${sideName(f.t, f.k[0])} ${POS[f.k[1]]}${from} ${vals}`,
       short: `${hasTooth || f.t !== ctx0.t ? `${toothName(f.t)} ` : ''}${f.k[0] !== ctx0.side ? `${sideName(f.t, f.k[0])} ` : ''}${POS[f.k[1]]}${from} ${vals}` });
   }
+  if (ops.length) voice.toothSel = null; // 入れたら、その場所に決まる
   if (moved && !ops.length) {
-    done.push(`${siteName(cur().t, cur().k)} へ移動しました`);
+    done.push(voice.toothSel ? `${toothName(cur().t)}　${sideName(cur().t, cur().k[0])} へ移動しました（部位をどうぞ）` : `${siteName(cur().t, cur().k)} へ移動しました`);
     // 移動しただけのあとは、続きの「中央」「プラス」も移動先に（前に直していた歯や、前に入れた部位に付けない）
     specDone(cur(), 'move'); voice.lastSite = null;
   }
@@ -2667,9 +2679,10 @@ function handleSpeech(raw, provisional = false, dry = false) {
     const b = cur(), reply = replyMode(), saidSite = toks.some((t) => t.type === 'side' || t.type === 'pos');
     const saidSide = toks.some((t) => t.type === 'side'), saidPos = toks.some((t) => t.type === 'pos');
     const said = b.k === 'x' ? '' : [saidSide ? sideName(b.t, b.k[0]) : '', saidPos ? POS[b.k[1]] : ''].filter(Boolean).join(' '); // 言った場所の言葉だけ（「うら」→口蓋側、「前」→近心）
+    const posW = voice.toothSel ? '' : ` ${POS[b.k[1]]}`; // 歯と側だけ選んだときは、近心などを言わない
     if (reply === 'tone') moveItem = { tone: 'pop' };
-    else if (hasTooth) moveItem = { reply: true, text: b.k === 'x' || !(reply === 'full' || saidSite) ? toothName(b.t) : reply === 'each' ? `${toothName(b.t)} ${said}` : `${toothName(b.t)} ${sideName(b.t, b.k[0])} ${POS[b.k[1]]}` };
-    else if (reply === 'full') moveItem = { reply: true, text: `${sideName(b.t, b.k[0])} ${POS[b.k[1]]}` };
+    else if (hasTooth) moveItem = { reply: true, text: b.k === 'x' || !(reply === 'full' || saidSite) ? toothName(b.t) : reply === 'each' ? `${toothName(b.t)} ${said}` : `${toothName(b.t)} ${sideName(b.t, b.k[0])}${posW}` };
+    else if (reply === 'full') moveItem = { reply: true, text: `${sideName(b.t, b.k[0])}${posW}` };
     else if (reply === 'each' && said) moveItem = { reply: true, text: said };
     else moveItem = { tone: 'pop' };
   }
