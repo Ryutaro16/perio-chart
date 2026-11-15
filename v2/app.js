@@ -1680,6 +1680,7 @@ async function voiceStart() {
   voice.starting = true;
   await micPrepare();
   voice.starting = false;
+  if (audioCtx) await refreshAudioOut(); // 始めるたびに、今つながっている出口（イヤホンなど）で鳴らす
   const r = new SR();
   r.lang = 'ja-JP';
   r.continuous = true;
@@ -1831,6 +1832,17 @@ function setVoiceResult(raw, done, fallback) {
 const guideOn = (key) => { const g = settings.guide; return g.enabled && !voice.muted && g[key]; };
 let audioCtx = null;
 // iPadでは、音を出す前に一度ボタン操作の中で準備しておく必要がある
+// アプリの声と音だけの音量（0〜100%）。聞き取り中は iPhone の音量が「通話の音量」になってゼロにできないため（2026-11-15 利用者の希望）
+const guideVol = () => Math.max(0, Math.min(100, settings.guide.vol ?? 100)) / 100;
+// 音の出口を作り直す。最初に鳴らしたときの出口（本体のスピーカーなど）を使い続け、あとでつないだイヤホンから出ないことがあるため（推定）
+async function refreshAudioOut() {
+  try {
+    const n = new (window.AudioContext || window.webkitAudioContext)();
+    await n.resume().catch(() => {});
+    if (n.state === 'running') { const o = audioCtx; audioCtx = n; if (o) o.close().catch(() => {}); } else n.close().catch(() => {}); // 作り直せなければ前のまま
+  } catch { /* 音が出せない環境 */ }
+}
+if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) navigator.mediaDevices.addEventListener('devicechange', () => { if (audioCtx) refreshAudioOut(); });
 function unlockAudio() {
   try { audioCtx ||= new (window.AudioContext || window.webkitAudioContext)(); audioCtx.resume(); } catch { /* 音が出せない環境 */ }
   try { if (window.speechSynthesis) speechSynthesis.speak(new SpeechSynthesisUtterance('')); } catch { /* 読み上げが使えない環境 */ }
@@ -1838,7 +1850,8 @@ function unlockAudio() {
 const TONES = { chime: [[880, 0, 0.13], [1318, 0.14, 0.22]], buzz: [[196, 0, 0.3]], pop: [[1100, 0, 0.06]], chk: [[1568, 0, 0.07], [1568, 0.12, 0.07]] };
 function playTone(kind) {
   return new Promise((res) => {
-    if (!audioCtx) { res(); return; }
+    const vol = guideVol();
+    if (!audioCtx || !vol) { res(); return; }
     const t0 = audioCtx.currentTime + 0.02;
     let end = 0;
     for (const [f, at, dur] of TONES[kind]) {
@@ -1846,7 +1859,7 @@ function playTone(kind) {
       o.type = kind === 'buzz' ? 'square' : 'sine';
       o.frequency.value = f;
       g.gain.setValueAtTime(0.0001, t0 + at);
-      g.gain.exponentialRampToValueAtTime(kind === 'buzz' ? 0.12 : 0.3, t0 + at + 0.015);
+      g.gain.exponentialRampToValueAtTime(Math.max(0.0002, (kind === 'buzz' ? 0.12 : 0.3) * vol), t0 + at + 0.015);
       g.gain.exponentialRampToValueAtTime(0.0001, t0 + at + dur);
       o.connect(g); g.connect(audioCtx.destination);
       o.start(t0 + at); o.stop(t0 + at + dur + 0.02);
@@ -1871,6 +1884,7 @@ function say(text) {
     const u = new SpeechSynthesisUtterance(r);
     u.lang = 'ja-JP';
     u.rate = RATE[settings.guide.rate] || 1.2;
+    u.volume = guideVol();
     const v = jaVoice();
     if (v) u.voice = v;
     let fin = false;
@@ -1884,7 +1898,7 @@ const guideQ = [];
 let guiding = false;
 function guide(items) {
   const list = (items || []).filter((x) => x && (x.tone || x.text));
-  if (!list.length) return;
+  if (!list.length || !guideVol()) return; // 音量0%なら鳴らさない（読み上げのために聞き取りを止めることもしない）
   guideQ.push(...list);
   if (!guiding) runGuide();
 }
@@ -3384,6 +3398,9 @@ function guideSettingsHTML() {
       <div class="swgroup"><div class="swh">声の返し方（歯を選んだとき・場所を言って入れたとき）</div>
         <p class="sub">声で返す間（約1秒）は聞き取りを止めます。音（ポッ）は止めません。</p>
         <div class="row-tools">${[['each', '歯の名前・場所・数字をそれぞれ短く（「右上6」「近心」「近心 3」）'], ['short', '歯の名前と、入った数字だけ（場所はポッ）'], ['full', '全部（「右上6」「頬側 近心」「右上6 頬側 近心 3」）'], ['tone', '音だけ（ポッ）']].map(([v, l]) => `<label class="mini"><input type="radio" name="greply" value="${v}" ${replyMode() === v ? 'checked' : ''}> ${l}</label>`).join('')}</div></div>
+      <div class="swgroup"><div class="swh">アプリの声と音の大きさ</div>
+        <p class="sub">iPhone の音量とは別に、アプリの声と音だけを調整します（聞き取り中は iPhone の音量をゼロにできないため）。0% で無音になります。</p>
+        <div class="row-tools"><input type="range" id="gvol" min="0" max="100" step="10" value="${Math.round(guideVol() * 100)}" style="width:220px"><b id="gvolv">${Math.round(guideVol() * 100)}%</b></div></div>
       <div class="swgroup"><div class="swh">声の速さ</div><div class="row-tools">
         ${[['normal', 'ふつう'], ['mid', '少し速い'], ['fast', '速い']].map(([v, l]) => `<label class="mini"><input type="radio" name="grate" value="${v}" ${g.rate === v ? 'checked' : ''}> ${l}</label>`).join('')}
         <button class="btn" id="gtest">試しに聞く</button></div></div>
@@ -3401,6 +3418,8 @@ function bindGuideSettings() {
     if (c.dataset.g === 'enabled') showSettings();
   }));
   document.querySelectorAll('input[name=grate]').forEach((r) => (r.onchange = () => { settings.guide.rate = r.value; saveSettings(); }));
+  $('#gvol').oninput = () => { $('#gvolv').textContent = `${$('#gvol').value}%`; };
+  $('#gvol').onchange = () => { settings.guide.vol = Number($('#gvol').value); saveSettings(); unlockAudio(); guide([{ tone: 'chime', text: '左上、頬側' }]); };
   document.querySelectorAll('input[name=greply]').forEach((r) => (r.onchange = () => { settings.guide.reply = r.value; saveSettings(); }));
   $('#gtest').onclick = () => { unlockAudio(); guide([{ tone: 'chime', text: '左上、頬側' }, { tone: 'buzz', text: '6番、部位をもう一度' }]); };
 }
